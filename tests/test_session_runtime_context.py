@@ -82,15 +82,15 @@ def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
             "identity",
             "set",
             "--agent-id",
-            "qa1-id",
+            "qa 1-id",
             "--agent-name",
-            "qa1",
+            "qa one",
             "--agent-type",
-            "general-purpose",
+            "general purpose",
             "--team",
-            "demo",
+            "demo team",
             "--data-dir",
-            "/tmp/demo-data",
+            "/tmp/demo data",
             "--shell",
         ],
         env={"HOME": str(tmp_path / "home")},
@@ -98,8 +98,13 @@ def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "Run the following" not in result.output
-    assert 'export CLAWTEAM_AGENT_NAME="qa1"' in result.output
-    assert 'export CLAWTEAM_DATA_DIR="/tmp/demo-data"' in result.output
+    assert result.output.strip().splitlines() == [
+        "export CLAWTEAM_AGENT_ID='qa 1-id'",
+        "export CLAWTEAM_AGENT_NAME='qa one'",
+        "export CLAWTEAM_AGENT_TYPE='general purpose'",
+        "export CLAWTEAM_TEAM_NAME='demo team'",
+        "export CLAWTEAM_DATA_DIR='/tmp/demo data'",
+    ]
 
 
 

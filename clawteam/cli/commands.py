@@ -2334,17 +2334,19 @@ def identity_set(
     shell: bool = typer.Option(False, "--shell", help="Print pure shell export lines only"),
 ):
     """Print shell export commands to set identity environment variables."""
+    import shlex
+
     lines = []
     if agent_id:
-        lines.append(f'export CLAWTEAM_AGENT_ID="{agent_id}"')
+        lines.append(f"export CLAWTEAM_AGENT_ID={shlex.quote(agent_id)}")
     if agent_name:
-        lines.append(f'export CLAWTEAM_AGENT_NAME="{agent_name}"')
+        lines.append(f"export CLAWTEAM_AGENT_NAME={shlex.quote(agent_name)}")
     if agent_type:
-        lines.append(f'export CLAWTEAM_AGENT_TYPE="{agent_type}"')
+        lines.append(f"export CLAWTEAM_AGENT_TYPE={shlex.quote(agent_type)}")
     if team:
-        lines.append(f'export CLAWTEAM_TEAM_NAME="{team}"')
+        lines.append(f"export CLAWTEAM_TEAM_NAME={shlex.quote(team)}")
     if data_dir:
-        lines.append(f'export CLAWTEAM_DATA_DIR="{data_dir}"')
+        lines.append(f"export CLAWTEAM_DATA_DIR={shlex.quote(data_dir)}")
 
     if not lines:
         console.print("[yellow]No options specified. Use --agent-id, --agent-name, --agent-type, --team, --data-dir[/yellow]")

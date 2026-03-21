@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -54,10 +55,12 @@ def build_worker_task_prompt(
     if task.description:
         lines.extend(["", "## Description", task.description])
     bootstrap = (
-        f'eval $(clawteam identity set --agent-name {agent_name} --agent-id '
-        f'{os.environ.get("CLAWTEAM_AGENT_ID", agent_name)} --agent-type '
-        f'{os.environ.get("CLAWTEAM_AGENT_TYPE", "general-purpose")} --team {team_name} '
-        f'--data-dir "{os.environ.get("CLAWTEAM_DATA_DIR", "")}" --shell)'
+        "eval $(clawteam identity set "
+        f"--agent-name {shlex.quote(agent_name)} "
+        f"--agent-id {shlex.quote(os.environ.get('CLAWTEAM_AGENT_ID', agent_name))} "
+        f"--agent-type {shlex.quote(os.environ.get('CLAWTEAM_AGENT_TYPE', 'general-purpose'))} "
+        f"--team {shlex.quote(team_name)} "
+        f"--data-dir {shlex.quote(os.environ.get('CLAWTEAM_DATA_DIR', ''))} --shell)"
     )
     lines.extend([
         "",

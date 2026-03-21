@@ -45,21 +45,27 @@ def test_build_openclaw_agent_command_uses_headless_agent_mode():
 
 def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
-    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
-    monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "general-purpose")
-    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa 1-id")
+    monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "general purpose")
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data dir"))
 
     task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
     prompt = build_worker_task_prompt(
-        team_name="demo",
-        agent_name="qa1",
+        team_name="demo team",
+        agent_name="qa 1",
         leader_name="leader",
         task=task,
     )
 
+    expected_bootstrap = (
+        "`eval $(clawteam identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
+        "--agent-type 'general purpose' --team 'demo team' "
+        f"--data-dir '{tmp_path / 'data dir'}' --shell)`"
+    )
+
+    assert expected_bootstrap in prompt
     assert "clawteam identity set" in prompt
     assert "--shell" in prompt
-    assert "CLAWTEAM_DATA_DIR" not in prompt or str(tmp_path / "data") in prompt
 
 
 
