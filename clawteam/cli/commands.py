@@ -70,6 +70,40 @@ def _dump(model) -> dict:
     return json.loads(model.model_dump_json(by_alias=True, exclude_none=True))
 
 
+def _handle_failed_task_notice(team: str, task, caller: str) -> dict | None:
+    from clawteam.team.mailbox import MailboxManager
+    from clawteam.team.manager import TeamManager
+
+    failure_kind = task.metadata.get("failure_kind", "complex")
+    if failure_kind != "complex":
+        return {"failureNotice": "skipped", "failureKind": failure_kind}
+
+    leader_name = TeamManager.get_leader_name(team)
+    if not leader_name:
+        return {"failureNotice": "no-leader", "failureKind": failure_kind}
+
+    root_cause = task.metadata.get("failure_root_cause") or "Unspecified"
+    evidence = task.metadata.get("failure_evidence") or (task.metadata.get("failure_note") or "No evidence provided.")
+    next_owner = task.metadata.get("failure_recommended_next_owner") or "leader"
+    next_action = task.metadata.get("failure_recommended_action") or "Decide reroute/recovery"
+    content = "\n".join([
+        f"COMPLEX FAIL: {task.subject} ({task.id})",
+        f"Owner: {task.owner or '(unassigned)'}",
+        f"Root cause: {root_cause}",
+        f"Evidence: {evidence}",
+        f"Recommended next owner: {next_owner}",
+        f"Recommended action: {next_action}",
+    ])
+    mailbox = MailboxManager(team)
+    msg = mailbox.send(from_agent=caller, to=leader_name, content=content)
+    return {
+        "failureNotice": "sent",
+        "failureKind": failure_kind,
+        "failureLeader": leader_name,
+        "failureMessageId": msg.request_id,
+    }
+
+
 def _output(data: dict | list, human_fn=None):
     """Output data as JSON or human-readable."""
     if _json_output:
@@ -763,6 +797,191 @@ task_app = typer.Typer(help="Task management commands")
 app.add_typer(task_app, name="task")
 
 
+def _workspace_registry_path(team_name: str) -> Path:
+    from clawteam.team.models import get_data_dir
+
+    return get_data_dir() / "workspaces" / team_name / "workspace-registry.json"
+
+
+def _load_workspace_info(team_name: str, agent_name: str):
+    from clawteam.workspace.models import WorkspaceRegistry
+
+    path = _workspace_registry_path(team_name)
+    if not path.exists():
+        return None
+    try:
+        registry = WorkspaceRegistry.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    for ws in registry.workspaces:
+        if ws.agent_name == agent_name:
+            return ws
+    return None
+
+
+def _build_release_task_prompt(task, message: str) -> str:
+    lines = []
+    if message.strip():
+        lines.append(message.strip())
+        lines.append("")
+    lines.extend([
+        f"Resume task {task.id} now.",
+        f"Subject: {task.subject}",
+    ])
+    if task.description:
+        lines.extend([
+            "Description:",
+            task.description,
+        ])
+    lines.extend([
+        "",
+        "This task has been released back to you.",
+        "Start immediately, update the task to in_progress when you begin, and only mark it completed when truly done.",
+    ])
+    return "\n".join(lines)
+
+
+def _spawn_existing_agent(
+    team_name: str,
+    agent_name: str,
+    agent_id: str,
+    agent_type: str,
+    task_prompt: str,
+    repo: str | None = None,
+    backend: str | None = None,
+    skip_permissions: bool | None = None,
+    resume: bool = True,
+) -> dict[str, str]:
+    import os as _os
+
+    from clawteam.config import get_effective
+    from clawteam.spawn import get_backend
+    from clawteam.spawn.prompt import build_agent_prompt
+    from clawteam.spawn.sessions import SessionStore
+    from clawteam.team.manager import TeamManager
+
+    if backend is None:
+        backend, _ = get_effective("default_backend")
+        backend = backend or "tmux"
+    if skip_permissions is None:
+        sp_val, _ = get_effective("skip_permissions")
+        skip_permissions = str(sp_val).lower() not in ("false", "0", "no", "")
+
+    ws_info = _load_workspace_info(team_name, agent_name)
+    cwd = ws_info.worktree_path if ws_info else (str(Path(repo).resolve()) if repo else None)
+    ws_branch = ws_info.branch_name if ws_info else ""
+
+    prompt = build_agent_prompt(
+        agent_name=agent_name,
+        agent_id=agent_id,
+        agent_type=agent_type,
+        team_name=team_name,
+        leader_name=TeamManager.get_leader_name(team_name) or "leader",
+        task=task_prompt,
+        user=_os.environ.get("CLAWTEAM_USER", ""),
+        workspace_dir=cwd or "",
+        workspace_branch=ws_branch,
+    )
+
+    command = ["openclaw"]
+    if resume:
+        session = SessionStore(team_name).load(agent_name)
+        if session and session.session_id and command[0] in ("claude",):
+            command = list(command) + ["--resume", session.session_id]
+        prompt += "\nYou are resuming a previous session."
+
+    be = get_backend(backend)
+    result = be.spawn(
+        command=command,
+        agent_name=agent_name,
+        agent_id=agent_id,
+        agent_type=agent_type,
+        team_name=team_name,
+        prompt=prompt,
+        cwd=cwd,
+        skip_permissions=skip_permissions,
+    )
+    if result.startswith("Error"):
+        raise RuntimeError(result)
+    return {
+        "backend": backend,
+        "cwd": cwd or "",
+        "workspaceBranch": ws_branch,
+        "message": result,
+    }
+
+
+def _release_task_to_owner(
+    team: str,
+    task,
+    caller: str,
+    message: str = "",
+    respawn: bool = True,
+    repo: str | None = None,
+) -> dict:
+    from clawteam.spawn.registry import is_agent_alive
+    from clawteam.team.mailbox import MailboxManager
+    from clawteam.team.manager import TeamManager
+
+    release_message = message.strip() or f"Task {task.id} is released. Start now and report only real blockers."
+    mailbox = MailboxManager(team)
+    mailbox.send(caller, task.owner, release_message)
+
+    alive_before = is_agent_alive(team, task.owner)
+    respawned = False
+    spawn_info = None
+    if respawn and alive_before is not True:
+        member = TeamManager.get_member(team, task.owner)
+        if member is None:
+            raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
+        spawn_info = _spawn_existing_agent(
+            team_name=team,
+            agent_name=task.owner,
+            agent_id=member.agent_id,
+            agent_type=member.agent_type,
+            task_prompt=_build_release_task_prompt(task, release_message),
+            repo=repo,
+            resume=True,
+        )
+        respawned = True
+
+    return {
+        "messageSent": True,
+        "message": release_message,
+        "ownerAliveBefore": alive_before,
+        "respawned": respawned,
+        "spawn": spawn_info or {},
+    }
+
+
+def _wake_tasks_to_pending(
+    team: str,
+    task_ids: list[str],
+    caller: str,
+    message_builder,
+    repo: str | None = None,
+) -> list[dict]:
+    from clawteam.team.models import TaskStatus
+    from clawteam.team.tasks import TaskStore
+
+    store = TaskStore(team)
+    releases: list[dict] = []
+    for target_id in task_ids:
+        target = store.get(target_id)
+        if target is None or not target.owner or target.status != TaskStatus.pending:
+            continue
+        release = _release_task_to_owner(
+            team,
+            target,
+            caller=caller,
+            message=message_builder(target),
+            respawn=True,
+            repo=repo,
+        )
+        releases.append({"taskId": target.id, "owner": target.owner, **release})
+    return releases
+
+
 @task_app.command("create")
 def task_create(
     team: str = typer.Argument(..., help="Team name"),
@@ -834,12 +1053,20 @@ def task_get(
 def task_update(
     team: str = typer.Argument(..., help="Team name"),
     task_id: str = typer.Argument(..., help="Task ID"),
-    status: Optional[str] = typer.Option(None, "--status", "-s", help="New status: pending, in_progress, completed, blocked"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="New status: pending, in_progress, completed, blocked, failed"),
     owner: Optional[str] = typer.Option(None, "--owner", "-o", help="New owner"),
     subject: Optional[str] = typer.Option(None, "--subject", help="New subject"),
     description: Optional[str] = typer.Option(None, "--description", "-d", help="New description"),
     add_blocks: Optional[str] = typer.Option(None, "--add-blocks", help="Comma-separated task IDs this blocks"),
     add_blocked_by: Optional[str] = typer.Option(None, "--add-blocked-by", help="Comma-separated task IDs blocking this"),
+    failure_kind: Optional[str] = typer.Option(None, "--failure-kind", help="Failure routing kind when status=failed: regular or complex"),
+    failure_note: Optional[str] = typer.Option(None, "--failure-note", help="Concrete failure summary/evidence when status=failed"),
+    failure_root_cause: Optional[str] = typer.Option(None, "--failure-root-cause", help="Root cause summary when status=failed"),
+    failure_evidence: Optional[str] = typer.Option(None, "--failure-evidence", help="Concrete evidence when status=failed"),
+    failure_recommended_next_owner: Optional[str] = typer.Option(None, "--failure-recommended-next-owner", help="Suggested next owner when status=failed"),
+    failure_recommended_action: Optional[str] = typer.Option(None, "--failure-recommended-action", help="Suggested next action when status=failed"),
+    wake_owner: bool = typer.Option(False, "--wake-owner", help="When the task becomes pending, notify the owner and respawn a dead worker automatically"),
+    message: Optional[str] = typer.Option(None, "--message", "-m", help="Optional release note to send when waking the owner"),
     force: bool = typer.Option(False, "--force", "-f", help="Force override task lock"),
 ):
     """Update a task (TaskUpdate)."""
@@ -852,7 +1079,56 @@ def task_update(
     blocks_list = [b.strip() for b in add_blocks.split(",") if b.strip()] if add_blocks else None
     blocked_by_list = [b.strip() for b in add_blocked_by.split(",") if b.strip()] if add_blocked_by else None
 
+    failure_metadata = None
+    if ts == TaskStatus.failed:
+        kind = (failure_kind or "complex").strip().lower()
+        if kind not in ("regular", "complex"):
+            _output({"error": "--failure-kind must be regular or complex"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+            raise typer.Exit(1)
+        failure_metadata = {"failure_kind": kind}
+        if failure_note:
+            failure_metadata["failure_note"] = failure_note.strip()
+        if failure_root_cause:
+            failure_metadata["failure_root_cause"] = failure_root_cause.strip()
+        if failure_evidence:
+            failure_metadata["failure_evidence"] = failure_evidence.strip()
+        if failure_recommended_next_owner:
+            failure_metadata["failure_recommended_next_owner"] = failure_recommended_next_owner.strip()
+        if failure_recommended_action:
+            failure_metadata["failure_recommended_action"] = failure_recommended_action.strip()
+
+        if kind == "complex":
+            required = {
+                "--failure-root-cause": failure_root_cause,
+                "--failure-evidence": failure_evidence,
+                "--failure-recommended-next-owner": failure_recommended_next_owner,
+                "--failure-recommended-action": failure_recommended_action,
+            }
+            missing = [flag for flag, value in required.items() if not (value or "").strip()]
+            if missing:
+                _output({"error": f"complex fail requires: {', '.join(missing)}"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+                raise typer.Exit(1)
+    elif failure_kind or failure_note or failure_root_cause or failure_evidence or failure_recommended_next_owner or failure_recommended_action:
+        _output({"error": "failure options require --status failed"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+        raise typer.Exit(1)
+
     caller = AgentIdentity.from_env().agent_name
+
+    existing = store.get(task_id)
+    if not existing:
+        _output({"error": f"Task '{task_id}' not found"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+        raise typer.Exit(1)
+
+    dependent_ids_to_wake: list[str] = []
+    failed_targets_to_wake: list[str] = []
+    if ts == TaskStatus.completed:
+        dependent_ids_to_wake = [
+            candidate.id
+            for candidate in store.list_tasks()
+            if task_id in candidate.blocked_by and candidate.status == TaskStatus.blocked
+        ]
+    elif ts == TaskStatus.failed:
+        failed_targets_to_wake = list(existing.metadata.get("on_fail", []))
 
     try:
         task = store.update(
@@ -863,6 +1139,120 @@ def task_update(
             description=description,
             add_blocks=blocks_list,
             add_blocked_by=blocked_by_list,
+            metadata=failure_metadata,
+            caller=caller,
+            force=force,
+        )
+    except TaskLockError as e:
+        _output({"error": str(e)}, lambda d: console.print(f"[red]Lock conflict: {d['error']}[/red]"))
+        raise typer.Exit(1)
+
+    wake = None
+    if wake_owner and task.status == TaskStatus.pending and task.owner:
+        try:
+            wake = _release_task_to_owner(team, task, caller=caller, message=message or "", respawn=True)
+        except RuntimeError as e:
+            _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+            raise typer.Exit(1)
+
+    auto_releases: list[dict] = []
+    try:
+        if dependent_ids_to_wake:
+            auto_releases.extend(
+                _wake_tasks_to_pending(
+                    team,
+                    dependent_ids_to_wake,
+                    caller=caller,
+                    message_builder=lambda target: (
+                        f"Task {target.id} is unblocked because dependency {task.id} completed. "
+                        "Start now and report only real blockers."
+                    ),
+                )
+            )
+        if failed_targets_to_wake:
+            auto_releases.extend(
+                _wake_tasks_to_pending(
+                    team,
+                    failed_targets_to_wake,
+                    caller=caller,
+                    message_builder=lambda target: (
+                        f"Task {target.id} is reopened because task {task.id} failed and routed work back to you. "
+                        "Start now and report only real blockers."
+                    ),
+                )
+            )
+    except RuntimeError as e:
+        _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+        raise typer.Exit(1)
+
+    failure_notice = None
+    if task.status == TaskStatus.failed:
+        failure_notice = _handle_failed_task_notice(team, task, caller)
+
+    data = _dump(task)
+    if failure_notice is not None:
+        data.update(failure_notice)
+    if auto_releases:
+        data["autoReleasedTasks"] = auto_releases
+    if wake is None:
+        def _human(d):
+            console.print(f"[green]OK[/green] Task {d['id']} updated")
+            for release in d.get("autoReleasedTasks", []):
+                console.print(
+                    f"  Auto-notified {release['owner']} for task {release['taskId']}"
+                    + (f" and respawned via {release['spawn'].get('backend', '')}" if release.get("respawned") else "")
+                )
+
+        _output(data, _human)
+    else:
+        data.update(wake)
+
+        def _human(d):
+            console.print(f"[green]OK[/green] Task {d['id']} updated")
+            console.print(f"  Owner alive before: {d['ownerAliveBefore']}")
+            if d.get("respawned"):
+                console.print(f"  Respawned: yes ({d['spawn'].get('backend', '')})")
+                if d["spawn"].get("cwd"):
+                    console.print(f"  Workspace: {d['spawn']['cwd']}")
+            else:
+                console.print("  Respawned: no")
+            for release in d.get("autoReleasedTasks", []):
+                console.print(
+                    f"  Auto-notified {release['owner']} for task {release['taskId']}"
+                    + (f" and respawned via {release['spawn'].get('backend', '')}" if release.get("respawned") else "")
+                )
+
+        _output(data, _human)
+
+
+@task_app.command("release")
+def task_release(
+    team: str = typer.Argument(..., help="Team name"),
+    task_id: str = typer.Argument(..., help="Task ID"),
+    message: str = typer.Option("", "--message", "-m", help="Optional release instruction to send to the owner"),
+    respawn: bool = typer.Option(True, "--respawn/--no-respawn", help="Respawn the owner automatically if their worker is dead"),
+    repo: Optional[str] = typer.Option(None, "--repo", help="Fallback repo/workspace path when no registered workspace exists"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force override task lock while releasing"),
+):
+    """Release a task back to its owner, notify them, and auto-respawn if needed."""
+    from clawteam.identity import AgentIdentity
+    from clawteam.team.models import TaskStatus
+    from clawteam.team.tasks import TaskLockError, TaskStore
+
+    caller = AgentIdentity.from_env().agent_name
+    store = TaskStore(team)
+    existing = store.get(task_id)
+    if not existing:
+        _output({"error": f"Task '{task_id}' not found"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+        raise typer.Exit(1)
+    if not existing.owner:
+        _output({"error": f"Task '{task_id}' has no owner"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+        raise typer.Exit(1)
+
+    try:
+        task = store.update(
+            task_id,
+            status=TaskStatus.pending,
             caller=caller,
             force=force,
         )
@@ -874,8 +1264,34 @@ def task_update(
         _output({"error": f"Task '{task_id}' not found"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
         raise typer.Exit(1)
 
+    try:
+        release = _release_task_to_owner(
+            team,
+            task,
+            caller=caller,
+            message=message,
+            respawn=respawn,
+            repo=repo,
+        )
+    except RuntimeError as e:
+        _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+        raise typer.Exit(1)
+
     data = _dump(task)
-    _output(data, lambda d: console.print(f"[green]OK[/green] Task {d['id']} updated"))
+    data.update(release)
+
+    def _human(d):
+        console.print(f"[green]OK[/green] Task {d['id']} released to {d['owner']}")
+        console.print(f"  Status: {d['status']}")
+        console.print(f"  Owner alive before: {d['ownerAliveBefore']}")
+        if d.get("respawned"):
+            console.print(f"  Respawned: yes ({d['spawn'].get('backend', '')})")
+            if d["spawn"].get("cwd"):
+                console.print(f"  Workspace: {d['spawn']['cwd']}")
+        else:
+            console.print("  Respawned: no")
+
+    _output(data, _human)
 
 
 @task_app.command("list")
@@ -2201,12 +2617,34 @@ def launch_team(
 
     # 5. Create tasks
     ts = TaskStore(t_name)
+    created_task_ids: dict[str, str] = {}
     for task_def in tmpl.tasks:
-        ts.create(
+        missing_dependencies = [name for name in task_def.blocked_by if name not in created_task_ids]
+        if missing_dependencies:
+            console.print(
+                f"[red]Template task '{task_def.subject}' references unknown or not-yet-created blocked_by tasks: {', '.join(missing_dependencies)}[/red]"
+            )
+            raise typer.Exit(1)
+
+        missing_fail_targets = [name for name in task_def.on_fail if name not in created_task_ids]
+        if missing_fail_targets:
+            console.print(
+                f"[red]Template task '{task_def.subject}' references unknown or not-yet-created on_fail tasks: {', '.join(missing_fail_targets)}[/red]"
+            )
+            raise typer.Exit(1)
+
+        metadata = {}
+        if task_def.on_fail:
+            metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
+
+        task = ts.create(
             subject=task_def.subject,
             description=task_def.description,
             owner=task_def.owner,
+            blocked_by=[created_task_ids[name] for name in task_def.blocked_by],
+            metadata=metadata,
         )
+        created_task_ids[task_def.subject] = task.id
 
     # 6. Get backend
     try:
