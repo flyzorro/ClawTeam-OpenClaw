@@ -77,9 +77,8 @@ def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_pa
     monkeypatch.setenv("CLAWTEAM_WORKSPACE_DIR", str(tmp_path / "ws"))
 
     mailbox = MailboxManager("demo")
-    mailbox.send("leader", "qa1", "start now", key="task-wake:t1", last_task="t1")
-
     task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    wake = mailbox.send("leader", "qa1", "start now", key=f"task-wake:{task.id}", last_task=task.id)
 
     called = {}
 
@@ -96,6 +95,7 @@ def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_pa
     assert result["status"] == "dispatched"
     assert result["taskId"] == task.id
     assert result["messages"] == 1
+    assert result["acked"] == 1
     assert called["command"][:2] == ["openclaw", "agent"]
     assert "--session-id" in called["command"]
     assert f"clawteam-demo-qa1" in called["command"]
@@ -104,6 +104,36 @@ def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_pa
     assert updated is not None
     assert updated.status.value == "in_progress"
     assert updated.locked_by == "qa1"
+
+    acks = mailbox.receive("leader")
+    assert len(acks) == 1
+    assert acks[0].request_id == wake.request_id
+    assert acks[0].type.value == "ack"
+
+
+def test_run_worker_iteration_acks_matching_wake_without_consuming_other_messages(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+
+    mailbox = MailboxManager("demo")
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    other = mailbox.send("leader", "qa1", "unrelated", key="note:1")
+    wake = mailbox.send("leader", "qa1", "start now", key=f"task-wake:{task.id}", last_task=task.id)
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    result = run_worker_iteration(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert result["acked"] == 1
+    remaining = mailbox.peek("qa1")
+    assert len(remaining) == 1
+    assert remaining[0].request_id == other.request_id
+
+    acks = mailbox.receive("leader")
+    assert len(acks) == 1
+    assert acks[0].request_id == wake.request_id
 
 
 def test_subprocess_backend_wraps_openclaw_in_worker_runtime(monkeypatch, tmp_path):
