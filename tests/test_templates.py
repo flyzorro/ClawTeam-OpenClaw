@@ -54,6 +54,14 @@ class TestModels:
         t = TaskDef(subject="Build feature", description="details", owner="alice")
         assert t.subject == "Build feature"
 
+    def test_task_def_blocked_by(self):
+        t = TaskDef(subject="Build feature", blocked_by=["Setup"])
+        assert t.blocked_by == ["Setup"]
+
+    def test_task_def_on_fail(self):
+        t = TaskDef(subject="Run QA", on_fail=["Implement"])
+        assert t.on_fail == ["Implement"]
+
     def test_template_def_defaults(self):
         leader = AgentDef(name="lead")
         t = TemplateDef(name="my-tmpl", leader=leader)
@@ -87,6 +95,43 @@ class TestLoadBuiltinTemplate:
         for task in tmpl.tasks:
             if task.owner:
                 assert task.owner in agent_names, f"Task owner '{task.owner}' not in agents"
+
+    def test_five_step_delivery_parallel_structure(self):
+        tmpl = load_template("five-step-delivery")
+        agent_names = {tmpl.leader.name} | {a.name for a in tmpl.agents}
+        assert {"config1", "dev1", "dev2", "qa1", "qa2", "review1"}.issubset(agent_names)
+
+        by_subject = {task.subject: task for task in tmpl.tasks}
+        assert by_subject["Implement backend/data changes with real validation"].blocked_by == [
+            "Prepare repo, branch, env, and runnable baseline"
+        ]
+        assert by_subject["Implement frontend/UI changes with real validation"].blocked_by == [
+            "Prepare repo, branch, env, and runnable baseline"
+        ]
+        assert by_subject["Run main-flow QA on the real change"].blocked_by == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Run edge-case and regression QA on the real change"].blocked_by == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].blocked_by == [
+            "Run main-flow QA on the real change",
+            "Run edge-case and regression QA on the real change",
+        ]
+        assert by_subject["Run main-flow QA on the real change"].on_fail == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Run edge-case and regression QA on the real change"].on_fail == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].on_fail == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
 
 
 class TestLoadTemplateNotFound:
