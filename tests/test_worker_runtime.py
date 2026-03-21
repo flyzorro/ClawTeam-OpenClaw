@@ -171,6 +171,38 @@ def test_run_worker_iteration_does_not_claim_pending_task_without_matching_wake(
     assert remaining[0].key == "note:1"
 
 
+def test_run_worker_iteration_keeps_pending_task_idle_until_explicit_wake(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+
+    called = {"ran": False}
+
+    def fake_run(*args, **kwargs):
+        called["ran"] = True
+        return _Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_worker_iteration(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert result == {
+        "status": "waiting_for_wake",
+        "messages": 0,
+        "acked": 0,
+        "taskId": task.id,
+    }
+    assert called["ran"] is False
+
+    updated = TaskStore("demo").get(task.id)
+    assert updated is not None
+    assert updated.status.value == "pending"
+    assert updated.locked_by == ""
+
+
 def test_subprocess_backend_wraps_openclaw_in_worker_runtime(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "leader")
