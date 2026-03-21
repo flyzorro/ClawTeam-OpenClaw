@@ -348,6 +348,59 @@ def test_task_failed_without_actual_qa_start_does_not_reopen_owner(monkeypatch, 
     assert not any("reopened because task" in (msg.content or "") for msg in messages)
 
 
+def test_task_failed_complex_does_not_reopen_owner_even_after_actual_start(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    impl = store.create("Implement fix", description="Fix the broken path", owner="dev1")
+    qa = store.create(
+        "Regression QA",
+        owner="qa1",
+        blocked_by=[impl.id],
+        metadata={"on_fail": [impl.id]},
+    )
+    store.update(impl.id, status=TaskStatus.completed)
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
+
+    backend = RecordingBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.registry.is_agent_alive", lambda team, agent: False if agent == "dev1" else True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "task", "update", "demo", qa.id,
+            "--status", "failed",
+            "--failure-kind", "complex",
+            "--failure-root-cause", "Owner and reroute are unclear",
+            "--failure-evidence", "QA found issues but cannot assign precise owner",
+            "--failure-recommended-next-owner", "leader",
+            "--failure-recommended-action", "Decide whether dev1 or dev2 owns the follow-up",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(backend.calls) == 0
+
+    impl_after = TaskStore("demo").get(impl.id)
+    assert impl_after.status.value == "completed"
+    assert qa.id not in impl_after.blocked_by
+
+    inbox = MailboxManager("demo")
+    leader_messages = inbox.peek("leader")
+    assert any("COMPLEX FAIL" in (msg.content or "") for msg in leader_messages)
+    dev1_messages = inbox.peek("dev1")
+    assert not any("reopened because task" in (msg.content or "") for msg in dev1_messages)
+
+
 def test_task_update_failed_complex_notifies_leader(monkeypatch, tmp_path):
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])

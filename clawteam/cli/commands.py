@@ -1196,8 +1196,9 @@ def task_update(
             for candidate in store.list_tasks()
             if task_id in candidate.blocked_by and candidate.status == TaskStatus.blocked
         ]
-    elif ts == TaskStatus.failed:
-        failed_targets_to_wake = list(existing.metadata.get("on_fail", []))
+    elif ts == TaskStatus.failed and failure_metadata:
+        if failure_metadata.get("failure_kind") == "regular" and existing.started_at:
+            failed_targets_to_wake = list(existing.metadata.get("on_fail", []))
 
     try:
         task = store.update(

@@ -278,7 +278,11 @@ class TaskStore:
 
     def _apply_failure_flow_unlocked(self, failed_task: TaskItem) -> None:
         on_fail_targets = failed_task.metadata.get("on_fail", [])
-        if not on_fail_targets or not failed_task.started_at:
+        if (
+            not on_fail_targets
+            or not failed_task.started_at
+            or failed_task.metadata.get("failure_kind") != "regular"
+        ):
             return
 
         for target_id in on_fail_targets:
