@@ -6,6 +6,8 @@ by the ClawTeam Skill, not duplicated here.
 
 from __future__ import annotations
 
+import os
+
 
 def build_agent_prompt(
     agent_name: str,
@@ -24,6 +26,14 @@ def build_agent_prompt(
         f"CLAWTEAM_AGENT_ID={agent_id} "
         f"CLAWTEAM_AGENT_TYPE={agent_type} "
         f"CLAWTEAM_TEAM_NAME={team_name}"
+    )
+    data_dir = os.environ.get("CLAWTEAM_DATA_DIR", "").strip()
+    if data_dir:
+        identity_prefix = f"{identity_prefix} CLAWTEAM_DATA_DIR={data_dir}"
+    bootstrap_cmd = (
+        f"eval $({identity_prefix} clawteam identity set --agent-name {agent_name} "
+        f"--agent-id {agent_id} --agent-type {agent_type} --team {team_name}"
+        f"{f' --data-dir {data_dir}' if data_dir else ''} --shell)"
     )
     lines = [
         "## Identity\n",
@@ -66,7 +76,7 @@ def build_agent_prompt(
         "## Coordination Protocol\n",
         "- IMPORTANT: OpenClaw shell/tool calls may not inherit your ClawTeam identity automatically.",
         "- Before using `clawteam`, bootstrap your identity in the current shell:",
-        f'  `eval $({identity_prefix} clawteam identity set --agent-name {agent_name} --agent-id {agent_id} --agent-type {agent_type} --team {team_name})`',
+        f"  `{bootstrap_cmd}`",
         "- If you run one-off commands instead of bootstrapping, prefix them explicitly with your identity:",
         f"  `{identity_prefix} clawteam task list {team_name} --owner {agent_name}`",
         f"- Use `{identity_prefix} clawteam task list {team_name} --owner {agent_name}` to see your tasks.",

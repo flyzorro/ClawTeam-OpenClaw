@@ -73,6 +73,36 @@ def test_inbox_receive_resolves_data_dir_from_session_registry(monkeypatch, tmp_
     assert "wake up" in result.output
 
 
+def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "identity",
+            "set",
+            "--agent-id",
+            "qa1-id",
+            "--agent-name",
+            "qa1",
+            "--agent-type",
+            "general-purpose",
+            "--team",
+            "demo",
+            "--data-dir",
+            "/tmp/demo-data",
+            "--shell",
+        ],
+        env={"HOME": str(tmp_path / "home")},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Run the following" not in result.output
+    assert 'export CLAWTEAM_AGENT_NAME="qa1"' in result.output
+    assert 'export CLAWTEAM_DATA_DIR="/tmp/demo-data"' in result.output
+
+
+
 def test_inbox_receive_fails_closed_when_session_has_no_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _register_runtime_worker(monkeypatch, tmp_path)

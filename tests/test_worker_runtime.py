@@ -8,7 +8,11 @@ from clawteam.spawn.subprocess_backend import SubprocessBackend
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.manager import TeamManager
 from clawteam.team.tasks import TaskStore
-from clawteam.worker_runtime import build_openclaw_agent_command, run_worker_iteration
+from clawteam.worker_runtime import (
+    build_openclaw_agent_command,
+    build_worker_task_prompt,
+    run_worker_iteration,
+)
 
 
 class _Completed:
@@ -37,6 +41,26 @@ def test_build_openclaw_agent_command_uses_headless_agent_mode():
     assert "clawteam-demo-qa1" in cmd
     assert "--message" in cmd
     assert "hello" in cmd
+
+
+def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+    monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "general-purpose")
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    prompt = build_worker_task_prompt(
+        team_name="demo",
+        agent_name="qa1",
+        leader_name="leader",
+        task=task,
+    )
+
+    assert "clawteam identity set" in prompt
+    assert "--shell" in prompt
+    assert "CLAWTEAM_DATA_DIR" not in prompt or str(tmp_path / "data") in prompt
+
 
 
 def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_path):

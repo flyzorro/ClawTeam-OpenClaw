@@ -2331,6 +2331,7 @@ def identity_set(
     agent_type: Optional[str] = typer.Option(None, "--agent-type", help="Agent type"),
     team: Optional[str] = typer.Option(None, "--team", help="Team name"),
     data_dir: Optional[str] = typer.Option(None, "--data-dir", help="ClawTeam data dir"),
+    shell: bool = typer.Option(False, "--shell", help="Print pure shell export lines only"),
 ):
     """Print shell export commands to set identity environment variables."""
     lines = []
@@ -2352,10 +2353,12 @@ def identity_set(
     output = "\n".join(lines)
     if _json_output:
         print(json.dumps({"exports": lines}))
+    elif shell:
+        print(output)
     else:
         console.print("Run the following to set your identity:\n")
         console.print(output)
-        console.print(f"\nOr use: eval $(clawteam identity set {' '.join(sys.argv[3:])})")
+        console.print(f"\nOr use: eval $(clawteam identity set --shell {' '.join(sys.argv[3:])})")
 
 
 # ============================================================================

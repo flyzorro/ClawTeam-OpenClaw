@@ -57,7 +57,7 @@ def build_worker_task_prompt(
         f'eval $(clawteam identity set --agent-name {agent_name} --agent-id '
         f'{os.environ.get("CLAWTEAM_AGENT_ID", agent_name)} --agent-type '
         f'{os.environ.get("CLAWTEAM_AGENT_TYPE", "general-purpose")} --team {team_name} '
-        f'--data-dir "{os.environ.get("CLAWTEAM_DATA_DIR", "")}")'
+        f'--data-dir "{os.environ.get("CLAWTEAM_DATA_DIR", "")}" --shell)'
     )
     lines.extend([
         "",
