@@ -16,6 +16,12 @@ from rich.console import Console
 from rich.table import Table
 
 from clawteam import __version__
+from clawteam.services import (
+    describe_release_action,
+    handle_failed_task_notice,
+    release_task_to_owner,
+    wake_tasks_to_pending,
+)
 
 app = typer.Typer(
     name="clawteam",
@@ -82,40 +88,6 @@ def main(
 def _dump(model) -> dict:
     """Dump a pydantic model to dict with by_alias and exclude_none."""
     return json.loads(model.model_dump_json(by_alias=True, exclude_none=True))
-
-
-def _handle_failed_task_notice(team: str, task, caller: str) -> dict | None:
-    from clawteam.team.mailbox import MailboxManager
-    from clawteam.team.manager import TeamManager
-
-    failure_kind = task.metadata.get("failure_kind", "complex")
-    if failure_kind != "complex":
-        return {"failureNotice": "skipped", "failureKind": failure_kind}
-
-    leader_name = TeamManager.get_leader_name(team)
-    if not leader_name:
-        return {"failureNotice": "no-leader", "failureKind": failure_kind}
-
-    root_cause = task.metadata.get("failure_root_cause") or "Unspecified"
-    evidence = task.metadata.get("failure_evidence") or (task.metadata.get("failure_note") or "No evidence provided.")
-    next_owner = task.metadata.get("failure_recommended_next_owner") or "leader"
-    next_action = task.metadata.get("failure_recommended_action") or "Decide reroute/recovery"
-    content = "\n".join([
-        f"COMPLEX FAIL: {task.subject} ({task.id})",
-        f"Owner: {task.owner or '(unassigned)'}",
-        f"Root cause: {root_cause}",
-        f"Evidence: {evidence}",
-        f"Recommended next owner: {next_owner}",
-        f"Recommended action: {next_action}",
-    ])
-    mailbox = MailboxManager(team)
-    msg = mailbox.send(from_agent=caller, to=leader_name, content=content)
-    return {
-        "failureNotice": "sent",
-        "failureKind": failure_kind,
-        "failureLeader": leader_name,
-        "failureMessageId": msg.request_id,
-    }
 
 
 def _output(data: dict | list, human_fn=None):
@@ -852,247 +824,6 @@ task_app = typer.Typer(help="Task management commands")
 app.add_typer(task_app, name="task")
 
 
-def _workspace_registry_path(team_name: str) -> Path:
-    from clawteam.team.models import get_data_dir
-
-    return get_data_dir() / "workspaces" / team_name / "workspace-registry.json"
-
-
-def _load_workspace_info(team_name: str, agent_name: str):
-    from clawteam.workspace.models import WorkspaceRegistry
-
-    path = _workspace_registry_path(team_name)
-    if not path.exists():
-        return None
-    try:
-        registry = WorkspaceRegistry.model_validate_json(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    for ws in registry.workspaces:
-        if ws.agent_name == agent_name:
-            return ws
-    return None
-
-
-def _build_release_task_prompt(task, message: str) -> str:
-    lines = []
-    if message.strip():
-        lines.append(message.strip())
-        lines.append("")
-    lines.extend([
-        f"Resume task {task.id} now.",
-        f"Subject: {task.subject}",
-    ])
-    if task.description:
-        lines.extend([
-            "Description:",
-            task.description,
-        ])
-    lines.extend([
-        "",
-        "This task has been released back to you.",
-        "Start immediately, update the task to in_progress when you begin, and only mark it completed when truly done.",
-    ])
-    return "\n".join(lines)
-
-
-def _spawn_existing_agent(
-    team_name: str,
-    agent_name: str,
-    agent_id: str,
-    agent_type: str,
-    task_prompt: str,
-    repo: str | None = None,
-    backend: str | None = None,
-    skip_permissions: bool | None = None,
-    resume: bool = True,
-) -> dict[str, str]:
-    import os as _os
-
-    from clawteam.config import get_effective
-    from clawteam.spawn import get_backend
-    from clawteam.spawn.prompt import build_agent_prompt
-    from clawteam.spawn.sessions import SessionStore
-    from clawteam.team.manager import TeamManager
-
-    if backend is None:
-        backend, _ = get_effective("default_backend")
-        backend = backend or "tmux"
-    if skip_permissions is None:
-        sp_val, _ = get_effective("skip_permissions")
-        skip_permissions = str(sp_val).lower() not in ("false", "0", "no", "")
-
-    ws_info = _load_workspace_info(team_name, agent_name)
-    cwd = ws_info.worktree_path if ws_info else (str(Path(repo).resolve()) if repo else None)
-    ws_branch = ws_info.branch_name if ws_info else ""
-
-    prompt = build_agent_prompt(
-        agent_name=agent_name,
-        agent_id=agent_id,
-        agent_type=agent_type,
-        team_name=team_name,
-        leader_name=TeamManager.get_leader_name(team_name) or "leader",
-        task=task_prompt,
-        user=_os.environ.get("CLAWTEAM_USER", ""),
-        workspace_dir=cwd or "",
-        workspace_branch=ws_branch,
-    )
-
-    command = ["openclaw"]
-    if resume:
-        session = SessionStore(team_name).load(agent_name)
-        if session and session.session_id and command[0] in ("claude",):
-            command = list(command) + ["--resume", session.session_id]
-        prompt += "\nYou are resuming a previous session."
-
-    be = get_backend(backend)
-    result = be.spawn(
-        command=command,
-        agent_name=agent_name,
-        agent_id=agent_id,
-        agent_type=agent_type,
-        team_name=team_name,
-        prompt=prompt,
-        cwd=cwd,
-        skip_permissions=skip_permissions,
-    )
-    if result.startswith("Error"):
-        raise RuntimeError(result)
-    return {
-        "backend": backend,
-        "cwd": cwd or "",
-        "workspaceBranch": ws_branch,
-        "message": result,
-    }
-
-
-def _release_task_to_owner(
-    team: str,
-    task,
-    caller: str,
-    message: str = "",
-    respawn: bool = True,
-    repo: str | None = None,
-) -> dict:
-    from clawteam.spawn.registry import get_agent_runtime_state, terminate_agent
-    from clawteam.team.mailbox import MailboxManager
-    from clawteam.team.manager import TeamManager
-    from clawteam.team.tasks import TaskStore
-
-    release_message = message.strip() or f"Task {task.id} is released. Start now and report only real blockers."
-
-    state_before = get_agent_runtime_state(team, task.owner)
-    alive_before = True if state_before == "alive" else (None if state_before == "missing" else False)
-    respawned = False
-    terminated_stale = False
-    spawn_info = None
-    replacement_required = False
-    cleared_tasks: list = []
-
-    if respawn and state_before in {"dead", "stale"}:
-        replacement_required = True
-        store = TaskStore(team)
-        cleared_tasks = store.clear_unfinished_tasks_for_owner(task.owner)
-        member = TeamManager.get_member(team, task.owner)
-        if member is None:
-            raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
-        if state_before == "stale":
-            terminated_stale = terminate_agent(team, task.owner)
-        spawn_info = _spawn_existing_agent(
-            team_name=team,
-            agent_name=task.owner,
-            agent_id=member.agent_id,
-            agent_type=member.agent_type,
-            task_prompt=(
-                "Your previous worker runtime was replaced. "
-                "All unfinished tasks previously assigned to you were cleared. "
-                "Do not resume old work. Wait for the leader to dispatch fresh tasks."
-            ),
-            repo=repo,
-            resume=False,
-        )
-        respawned = True
-
-    if not replacement_required:
-        if respawn and state_before == "missing":
-            member = TeamManager.get_member(team, task.owner)
-            if member is None:
-                raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
-            spawn_info = _spawn_existing_agent(
-                team_name=team,
-                agent_name=task.owner,
-                agent_id=member.agent_id,
-                agent_type=member.agent_type,
-                task_prompt=_build_release_task_prompt(task, release_message),
-                repo=repo,
-                resume=True,
-            )
-            respawned = True
-
-        mailbox = MailboxManager(team)
-        mailbox.send(
-            caller,
-            task.owner,
-            release_message,
-            key=f"task-wake:{task.id}",
-            last_task=task.id,
-            status=task.status.value,
-        )
-
-    return {
-        "messageSent": not replacement_required,
-        "message": release_message,
-        "ownerAliveBefore": alive_before,
-        "ownerRuntimeStateBefore": state_before,
-        "terminatedStale": terminated_stale,
-        "respawned": respawned,
-        "spawn": spawn_info or {},
-        "replacementRequired": replacement_required,
-        "clearedTaskIds": [item.id for item in cleared_tasks],
-        "clearedTaskSubjects": [item.subject for item in cleared_tasks],
-    }
-
-
-def _describe_release_action(release: dict) -> str:
-    if release.get("replacementRequired"):
-        return (
-            f"  Replacement cleanup for {release['owner']} task {release['taskId']}: "
-            f"cleared {len(release.get('clearedTaskIds', []))} unfinished task(s); leader must re-dispatch."
-        )
-    return (
-        f"  Auto-notified {release['owner']} for task {release['taskId']}"
-        + (f" and respawned via {release['spawn'].get('backend', '')}" if release.get("respawned") else "")
-    )
-
-
-def _wake_tasks_to_pending(
-    team: str,
-    task_ids: list[str],
-    caller: str,
-    message_builder,
-    repo: str | None = None,
-) -> list[dict]:
-    from clawteam.team.models import TaskStatus
-    from clawteam.team.tasks import TaskStore
-
-    store = TaskStore(team)
-    releases: list[dict] = []
-    for target_id in task_ids:
-        target = store.get(target_id)
-        if target is None or not target.owner or target.status != TaskStatus.pending:
-            continue
-        release = _release_task_to_owner(
-            team,
-            target,
-            caller=caller,
-            message=message_builder(target),
-            respawn=True,
-            repo=repo,
-        )
-        releases.append({"taskId": target.id, "owner": target.owner, **release})
-    return releases
-
-
 @task_app.command("create")
 def task_create(
     team: str = typer.Argument(..., help="Team name"),
@@ -1279,7 +1010,7 @@ def task_update(
     wake = None
     if wake_owner and task.status == TaskStatus.pending and task.owner:
         try:
-            wake = _release_task_to_owner(team, task, caller=caller, message=message or "", respawn=True)
+            wake = release_task_to_owner(team, task, caller=caller, message=message or "", respawn=True)
         except RuntimeError as e:
             _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
             raise typer.Exit(1)
@@ -1288,7 +1019,7 @@ def task_update(
     try:
         if dependent_ids_to_wake:
             auto_releases.extend(
-                _wake_tasks_to_pending(
+                wake_tasks_to_pending(
                     team,
                     dependent_ids_to_wake,
                     caller=caller,
@@ -1300,7 +1031,7 @@ def task_update(
             )
         if failed_targets_to_wake:
             auto_releases.extend(
-                _wake_tasks_to_pending(
+                wake_tasks_to_pending(
                     team,
                     failed_targets_to_wake,
                     caller=caller,
@@ -1316,7 +1047,7 @@ def task_update(
 
     failure_notice = None
     if task.status == TaskStatus.failed:
-        failure_notice = _handle_failed_task_notice(team, task, caller)
+        failure_notice = handle_failed_task_notice(team, task, caller)
 
     data = _dump(task)
     if failure_notice is not None:
@@ -1327,7 +1058,7 @@ def task_update(
         def _human(d):
             console.print(f"[green]OK[/green] Task {d['id']} updated")
             for release in d.get("autoReleasedTasks", []):
-                console.print(_describe_release_action(release))
+                console.print(describe_release_action(release))
 
         _output(data, _human)
     else:
@@ -1348,7 +1079,7 @@ def task_update(
                     "leader must re-dispatch fresh tasks."
                 )
             for release in d.get("autoReleasedTasks", []):
-                console.print(_describe_release_action(release))
+                console.print(describe_release_action(release))
 
         _output(data, _human)
 
@@ -1393,7 +1124,7 @@ def task_release(
         raise typer.Exit(1)
 
     try:
-        release = _release_task_to_owner(
+        release = release_task_to_owner(
             team,
             task,
             caller=caller,
