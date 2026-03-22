@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from clawteam.team.tasks import TaskStore
 
-from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.services.task_service import wake_tasks_to_pending
 from clawteam.task.transition import (
     TaskTransitionPlan,
@@ -88,6 +87,7 @@ class TaskUpdateContext:
     store: TaskStore
     release_team: str
     runtime: Any
+    failure_notifier: Callable[[str, TaskItem, str], dict[str, Any] | None]
     release_repo: str | None = None
 
 
@@ -143,7 +143,7 @@ def execute_task_update_effects(
 
     failure_notice = None
     if task.status == TaskStatus.failed:
-        failure_notice = notify_task_failure(ctx.release_team, task, caller)
+        failure_notice = ctx.failure_notifier(ctx.release_team, task, caller)
 
     return TaskUpdateEffects(
         wake=wake,

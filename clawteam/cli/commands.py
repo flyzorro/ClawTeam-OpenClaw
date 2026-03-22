@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from clawteam import __version__
+from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.services import (
     RuntimeOrchestrator,
     TaskReleaseContext,
@@ -940,6 +941,7 @@ def task_update(
         store=store,
         release_team=team,
         runtime=RuntimeOrchestrator(team=team),
+        failure_notifier=notify_task_failure,
     )
     request = TaskUpdateRequest(
         status=ts,
