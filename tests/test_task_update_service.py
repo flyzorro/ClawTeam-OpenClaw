@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from clawteam.runtime.orchestrator import RuntimeOrchestrator
 from clawteam.services.task_update_service import (
     TaskUpdateContext,
     TaskUpdateRequest,
     execute_task_update,
     execute_task_update_effects,
 )
-from clawteam.runtime.orchestrator import RuntimeOrchestrator
-from clawteam.team.mailbox import MailboxManager
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskStore
@@ -17,6 +16,20 @@ from clawteam.team.tasks import TaskStore
 
 def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    notices: list[dict[str, str]] = []
+
+    def fake_notifier(team, task, caller):
+        notices.append({
+            "team": team,
+            "task": task.id,
+            "caller": caller,
+            "kind": task.metadata.get("failure_kind", "complex"),
+        })
+        return {
+            "failureNotice": "sent",
+            "failureKind": task.metadata.get("failure_kind", "complex"),
+        }
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
     TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
@@ -38,6 +51,7 @@ def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, t
             store=store,
             release_team="demo",
             runtime=RuntimeOrchestrator(team="demo"),
+            failure_notifier=fake_notifier,
         ),
         request=TaskUpdateRequest(
             status=TaskStatus.failed,
@@ -63,12 +77,26 @@ def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, t
     assert result.plan.failed_targets_to_wake == []
     assert result.effects.failure_notice is not None
     assert result.effects.failure_notice["failureNotice"] == "sent"
-    leader_messages = MailboxManager("demo").peek("leader")
-    assert any("COMPLEX FAIL:" in (msg.content or "") for msg in leader_messages)
+    assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
 
 
 def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    notices: list[dict[str, str]] = []
+
+    def fake_notifier(team, task, caller):
+        notices.append({
+            "team": team,
+            "task": task.id,
+            "caller": caller,
+            "kind": task.metadata.get("failure_kind", "complex"),
+        })
+        return {
+            "failureNotice": "sent",
+            "failureKind": task.metadata.get("failure_kind", "complex"),
+            "failureLeader": "leader",
+        }
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
     TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
@@ -101,6 +129,7 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
             store=store,
             release_team="demo",
             runtime=RuntimeOrchestrator(team="demo"),
+            failure_notifier=fake_notifier,
         ),
         task=task,
         caller="qa1",
@@ -116,5 +145,4 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
     assert effects.failure_notice is not None
     assert effects.failure_notice["failureNotice"] == "sent"
     assert effects.failure_notice["failureLeader"] == "leader"
-    leader_messages = MailboxManager("demo").peek("leader")
-    assert any("COMPLEX FAIL:" in (msg.content or "") for msg in leader_messages)
+    assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
