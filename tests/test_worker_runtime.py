@@ -255,6 +255,69 @@ def test_run_worker_iteration_keeps_pending_task_idle_until_explicit_wake(monkey
     assert updated.locked_by == ""
 
 
+def test_run_worker_iteration_fails_closed_on_nonzero_agent_exit(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+
+    mailbox = MailboxManager("demo")
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    mailbox.send("leader", "qa1", "start now", key=f"task-wake:{task.id}", last_task=task.id)
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _Completed(returncode=1, stdout="", stderr="502 Upstream request failed"),
+    )
+
+    result = run_worker_iteration(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert result["status"] == "failed_closed"
+    assert result["taskId"] == task.id
+    assert result["reason"] == "worker agent turn failed"
+    assert result["returncode"] == 1
+
+    updated = TaskStore("demo").get(task.id)
+    assert updated is not None
+    assert updated.status.value == "failed"
+    assert updated.locked_by == ""
+    assert updated.metadata["failure_kind"] == "complex"
+    assert updated.metadata["failure_root_cause"] == "worker agent turn failed"
+    assert "502 Upstream request failed" in updated.metadata["failure_evidence"]
+
+
+def test_run_worker_iteration_fails_closed_when_dispatch_raises(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+
+    mailbox = MailboxManager("demo")
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    mailbox.send("leader", "qa1", "start now", key=f"task-wake:{task.id}", last_task=task.id)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("stream_read_error")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+
+    result = run_worker_iteration(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert result["status"] == "failed_closed"
+    assert result["taskId"] == task.id
+    assert result["reason"] == "worker runtime dispatch failed"
+    assert "stream_read_error" in result["evidence"]
+
+    updated = TaskStore("demo").get(task.id)
+    assert updated is not None
+    assert updated.status.value == "failed"
+    assert updated.locked_by == ""
+    assert updated.metadata["failure_kind"] == "complex"
+    assert updated.metadata["failure_root_cause"] == "worker runtime dispatch failed"
+    assert "stream_read_error" in updated.metadata["failure_evidence"]
+
+
 def test_subprocess_backend_wraps_openclaw_in_worker_runtime(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "leader")

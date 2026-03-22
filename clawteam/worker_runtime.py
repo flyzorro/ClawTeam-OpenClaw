@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskLockError, TaskStore
@@ -148,6 +149,40 @@ def clear_replaced_worker_unfinished_tasks(
     return [task.id for task in cleared]
 
 
+def _fail_claimed_task(
+    *,
+    team_name: str,
+    agent_name: str,
+    task_id: str,
+    reason: str,
+    evidence: str,
+) -> dict[str, Any]:
+    store = TaskStore(team_name)
+    task = store.update(
+        task_id,
+        status=TaskStatus.failed,
+        caller=agent_name,
+        metadata={
+            "failure_kind": "complex",
+            "failure_root_cause": reason,
+            "failure_evidence": evidence,
+            "failure_recommended_next_owner": "leader",
+            "failure_recommended_action": "Inspect runtime failure and decide whether to retry or reroute.",
+        },
+    )
+    failure_notice = None
+    if task is not None:
+        failure_notice = notify_task_failure(team_name, task, agent_name)
+    return {
+        "status": "failed_closed",
+        "taskId": task_id,
+        "failureNotice": failure_notice,
+        "reason": reason,
+        "evidence": evidence,
+    }
+
+
+
 def run_worker_iteration(
     *,
     team_name: str,
@@ -247,7 +282,48 @@ def run_worker_iteration(
         timeout_seconds=timeout_seconds,
     )
     env = os.environ.copy()
-    result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True)
+    try:
+        result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True)
+    except Exception as exc:
+        failed = _fail_claimed_task(
+            team_name=team_name,
+            agent_name=agent_name,
+            task_id=claimed.id,
+            reason="worker runtime dispatch failed",
+            evidence=repr(exc),
+        )
+        failed.update({
+            "messages": message_count,
+            "acked": acked_count,
+            "command": command,
+            "error": repr(exc),
+        })
+        return failed
+
+    if result.returncode != 0:
+        evidence_parts = []
+        if result.stderr:
+            evidence_parts.append(f"stderr: {result.stderr.strip()}")
+        if result.stdout:
+            evidence_parts.append(f"stdout: {result.stdout.strip()}")
+        evidence = "\n".join(part for part in evidence_parts if part) or f"returncode={result.returncode}"
+        failed = _fail_claimed_task(
+            team_name=team_name,
+            agent_name=agent_name,
+            task_id=claimed.id,
+            reason="worker agent turn failed",
+            evidence=evidence,
+        )
+        failed.update({
+            "messages": message_count,
+            "acked": acked_count,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "command": command,
+        })
+        return failed
+
     return {
         "status": "dispatched",
         "messages": message_count,
