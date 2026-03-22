@@ -7,7 +7,7 @@ from typing import Any
 
 from clawteam.team.tasks import TaskStore
 
-from clawteam.services.failure_service import handle_failed_task_notice
+from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.services.task_service import release_task_to_owner, wake_tasks_to_pending
 from clawteam.task.transition import (
     TaskTransitionPlan,
@@ -142,7 +142,7 @@ def execute_task_update_effects(
 
     failure_notice = None
     if task.status == TaskStatus.failed:
-        failure_notice = handle_failed_task_notice(ctx.release_team, task, caller)
+        failure_notice = notify_task_failure(ctx.release_team, task, caller)
 
     return TaskUpdateEffects(
         wake=wake,
@@ -203,3 +203,4 @@ def execute_task_update(
     )
 
     return TaskUpdateResult(task=task, plan=plan, effects=effects)
+
