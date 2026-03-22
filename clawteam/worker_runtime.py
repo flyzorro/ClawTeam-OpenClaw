@@ -70,6 +70,7 @@ def build_worker_task_prompt(
         f"- Your task lock is already claimed as {agent_name}. Do not claim it again unless you explicitly released it.",
         f"- Use `clawteam inbox receive {team_name} --ack` to consume wake/context messages when needed.",
         f"- If blocked, send a concrete blocker to {leader_name} via `clawteam inbox send {team_name} {leader_name} \"<blocker>\"` and update the task to failed with the correct failure metadata.",
+        "- Workflow routing is owned by the leader/template/state machine. Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges unless the leader explicitly told you to do that.",
         f"- When the task is truly complete, run `clawteam task update {team_name} {task.id} --status completed`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",

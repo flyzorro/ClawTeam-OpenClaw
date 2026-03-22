@@ -30,6 +30,7 @@ Operating rules:
 
 Your job:
 - Coordinate the team using clawteam tasks and inbox messages.
+- Own the workflow topology: create the full task chain, blocked_by edges, and on_fail edges up front instead of relying on workers to improvise repair chains.
 - Keep task descriptions concrete and verification-oriented.
 - Produce the final summary only after QA and Review evidence are available.
 - In the final report, clearly separate: delivered, validated, reviewed, not validated, and remaining risks.
@@ -341,6 +342,7 @@ Do not:
 - 不要用 mock 结果替代真实验证
 - 不要把未验证说成已验证
 - 不要只说 looks good 而没有证据
+- 不要自己临时新建 repair task 或改 workflow 依赖边；失败时按约定提交 failed，让状态机回流
 
 Report:
 - Test scenarios executed
@@ -374,6 +376,7 @@ Do not:
 - 不要用 mock 结果替代真实验证
 - 不要把未验证说成已验证
 - 不要只说 looks good 而没有证据
+- 不要自己临时新建 repair task 或改 workflow 依赖边；失败时按约定提交 failed，让状态机回流
 
 Report:
 - Test scenarios executed
@@ -406,6 +409,7 @@ Do not:
 - 不要把 code review 退化成重复 QA
 - 不要只因为任务状态是 completed 就默认通过
 - 不要忽略明显的结构、命名、边界和风险问题
+- 不要自己临时新建 repair task 或改 workflow 依赖边；失败时按约定提交 failed，让状态机回流
 
 Report:
 - Files/diff reviewed

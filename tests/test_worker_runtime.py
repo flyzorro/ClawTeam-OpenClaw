@@ -66,7 +66,8 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert expected_bootstrap in prompt
     assert "clawteam identity set" in prompt
     assert "--shell" in prompt
-
+    assert "Workflow routing is owned by the leader/template/state machine" in prompt
+    assert "Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges" in prompt
 
 
 def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_path):
