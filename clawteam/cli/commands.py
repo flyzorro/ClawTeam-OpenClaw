@@ -20,9 +20,8 @@ from clawteam.services import (
     TaskUpdateValidationError,
     build_failure_metadata,
     describe_release_action,
-    handle_failed_task_notice,
-    merge_update_metadata,
-    plan_task_update_followups,
+    execute_task_update_effects,
+    plan_task_update,
     release_task_to_owner,
     wake_tasks_to_pending,
 )
@@ -954,26 +953,13 @@ def task_update(
         _output({"error": f"Task '{task_id}' not found"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
         raise typer.Exit(1)
 
-    merged_metadata = dict(failure_metadata or {})
-    if add_on_fail_list:
-        current_on_fail = list(existing.metadata.get("on_fail", []))
-        for target in add_on_fail_list:
-            if target not in current_on_fail:
-                current_on_fail.append(target)
-        merged_metadata["on_fail"] = current_on_fail
-    metadata_to_apply = merged_metadata or None
-
-    dependent_ids_to_wake: list[str] = []
-    failed_targets_to_wake: list[str] = []
-    if ts == TaskStatus.completed:
-        dependent_ids_to_wake = [
-            candidate.id
-            for candidate in store.list_tasks()
-            if task_id in candidate.blocked_by and candidate.status == TaskStatus.blocked
-        ]
-    elif ts == TaskStatus.failed and failure_metadata:
-        if failure_metadata.get("failure_kind") == "regular" and existing.started_at:
-            failed_targets_to_wake = list(existing.metadata.get("on_fail", []))
+    update_plan = plan_task_update(
+        existing=existing,
+        status=ts,
+        all_tasks=store.list_tasks(),
+        failure_metadata=failure_metadata,
+        add_on_fail_list=add_on_fail_list,
+    )
 
     try:
         task = store.update(
@@ -984,7 +970,7 @@ def task_update(
             description=description,
             add_blocks=blocks_list,
             add_blocked_by=blocked_by_list,
-            metadata=metadata_to_apply,
+            metadata=update_plan.metadata_to_apply,
             caller=caller,
             force=force,
         )
@@ -992,54 +978,26 @@ def task_update(
         _output({"error": str(e)}, lambda d: console.print(f"[red]Lock conflict: {d['error']}[/red]"))
         raise typer.Exit(1)
 
-    wake = None
-    if wake_owner and task.status == TaskStatus.pending and task.owner:
-        try:
-            wake = release_task_to_owner(team, task, caller=caller, message=message or "", respawn=True)
-        except RuntimeError as e:
-            _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
-            raise typer.Exit(1)
-
-    auto_releases: list[dict] = []
     try:
-        if dependent_ids_to_wake:
-            auto_releases.extend(
-                wake_tasks_to_pending(
-                    team,
-                    dependent_ids_to_wake,
-                    caller=caller,
-                    message_builder=lambda target: (
-                        f"Task {target.id} is unblocked because dependency {task.id} completed. "
-                        "Start now and report only real blockers."
-                    ),
-                )
-            )
-        if failed_targets_to_wake:
-            auto_releases.extend(
-                wake_tasks_to_pending(
-                    team,
-                    failed_targets_to_wake,
-                    caller=caller,
-                    message_builder=lambda target: (
-                        f"Task {target.id} is reopened because task {task.id} failed and routed work back to you. "
-                        "Start now and report only real blockers."
-                    ),
-                )
-            )
+        effects = execute_task_update_effects(
+            team=team,
+            task=task,
+            caller=caller,
+            wake_owner=wake_owner,
+            message=message or "",
+            dependent_ids_to_wake=update_plan.dependent_ids_to_wake,
+            failed_targets_to_wake=update_plan.failed_targets_to_wake,
+        )
     except RuntimeError as e:
         _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
         raise typer.Exit(1)
 
-    failure_notice = None
-    if task.status == TaskStatus.failed:
-        failure_notice = handle_failed_task_notice(team, task, caller)
-
     data = _dump(task)
-    if failure_notice is not None:
-        data.update(failure_notice)
-    if auto_releases:
-        data["autoReleasedTasks"] = auto_releases
-    if wake is None:
+    if effects.failure_notice is not None:
+        data.update(effects.failure_notice)
+    if effects.auto_releases:
+        data["autoReleasedTasks"] = effects.auto_releases
+    if effects.wake is None:
         def _human(d):
             console.print(f"[green]OK[/green] Task {d['id']} updated")
             for release in d.get("autoReleasedTasks", []):
@@ -1047,7 +1005,7 @@ def task_update(
 
         _output(data, _human)
     else:
-        data.update(wake)
+        data.update(effects.wake)
 
         def _human(d):
             console.print(f"[green]OK[/green] Task {d['id']} updated")
