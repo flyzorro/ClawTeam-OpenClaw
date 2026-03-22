@@ -17,8 +17,12 @@ from rich.table import Table
 
 from clawteam import __version__
 from clawteam.services import (
+    TaskUpdateValidationError,
+    build_failure_metadata,
     describe_release_action,
     handle_failed_task_notice,
+    merge_update_metadata,
+    plan_task_update_followups,
     release_task_to_owner,
     wake_tasks_to_pending,
 )
@@ -929,37 +933,18 @@ def task_update(
     blocked_by_list = [b.strip() for b in add_blocked_by.split(",") if b.strip()] if add_blocked_by else None
     add_on_fail_list = [b.strip() for b in add_on_fail.split(",") if b.strip()] if add_on_fail else None
 
-    failure_metadata = None
-    if ts == TaskStatus.failed:
-        kind = (failure_kind or "complex").strip().lower()
-        if kind not in ("regular", "complex"):
-            _output({"error": "--failure-kind must be regular or complex"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
-            raise typer.Exit(1)
-        failure_metadata = {"failure_kind": kind}
-        if failure_note:
-            failure_metadata["failure_note"] = failure_note.strip()
-        if failure_root_cause:
-            failure_metadata["failure_root_cause"] = failure_root_cause.strip()
-        if failure_evidence:
-            failure_metadata["failure_evidence"] = failure_evidence.strip()
-        if failure_recommended_next_owner:
-            failure_metadata["failure_recommended_next_owner"] = failure_recommended_next_owner.strip()
-        if failure_recommended_action:
-            failure_metadata["failure_recommended_action"] = failure_recommended_action.strip()
-
-        if kind == "complex":
-            required = {
-                "--failure-root-cause": failure_root_cause,
-                "--failure-evidence": failure_evidence,
-                "--failure-recommended-next-owner": failure_recommended_next_owner,
-                "--failure-recommended-action": failure_recommended_action,
-            }
-            missing = [flag for flag, value in required.items() if not (value or "").strip()]
-            if missing:
-                _output({"error": f"complex fail requires: {', '.join(missing)}"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
-                raise typer.Exit(1)
-    elif failure_kind or failure_note or failure_root_cause or failure_evidence or failure_recommended_next_owner or failure_recommended_action:
-        _output({"error": "failure options require --status failed"}, lambda d: console.print(f"[red]{d['error']}[/red]"))
+    try:
+        failure_metadata = build_failure_metadata(
+            status=ts,
+            failure_kind=failure_kind,
+            failure_note=failure_note,
+            failure_root_cause=failure_root_cause,
+            failure_evidence=failure_evidence,
+            failure_recommended_next_owner=failure_recommended_next_owner,
+            failure_recommended_action=failure_recommended_action,
+        )
+    except TaskUpdateValidationError as e:
+        _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
         raise typer.Exit(1)
 
     caller = identity.agent_name
