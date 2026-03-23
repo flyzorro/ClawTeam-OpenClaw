@@ -378,6 +378,7 @@ def test_task_wake_can_be_acknowledged_then_claimed(monkeypatch, tmp_path):
 
 
 def test_task_complete_auto_notifies_and_respawns_unblocked_owner(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_TASK_EXECUTION_ID", raising=False)
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
 
@@ -422,6 +423,7 @@ def test_task_complete_auto_notifies_and_respawns_unblocked_owner(monkeypatch, t
 
 
 def test_task_failed_auto_notifies_and_respawns_reopened_owner(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_TASK_EXECUTION_ID", raising=False)
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
 
@@ -479,6 +481,7 @@ def test_task_failed_auto_notifies_and_respawns_reopened_owner(monkeypatch, tmp_
 
 
 def test_task_failed_without_actual_qa_start_does_not_reopen_owner(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_TASK_EXECUTION_ID", raising=False)
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
 
@@ -525,6 +528,7 @@ def test_task_failed_without_actual_qa_start_does_not_reopen_owner(monkeypatch, 
 
 
 def test_task_failed_complex_does_not_reopen_owner_even_after_actual_start(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_TASK_EXECUTION_ID", raising=False)
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
 
@@ -578,6 +582,7 @@ def test_task_failed_complex_does_not_reopen_owner_even_after_actual_start(monke
 
 
 def test_task_update_failed_complex_notifies_leader(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_TASK_EXECUTION_ID", raising=False)
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
 
@@ -619,6 +624,7 @@ def test_task_update_failed_complex_notifies_leader(monkeypatch, tmp_path):
 
 
 def test_task_update_failed_regular_does_not_notify_leader(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_TASK_EXECUTION_ID", raising=False)
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
 

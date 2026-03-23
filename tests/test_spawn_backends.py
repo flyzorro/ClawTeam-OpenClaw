@@ -507,6 +507,7 @@ def test_resolve_clawteam_executable_ignores_unrelated_argv0(monkeypatch, tmp_pa
 def test_resolve_clawteam_executable_ignores_relative_argv0_even_if_local_file_exists(
     monkeypatch, tmp_path
 ):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     local_shadow = tmp_path / "clawteam"
     local_shadow.write_text("#!/bin/sh\n")
     resolved_bin = tmp_path / "venv" / "bin" / "clawteam"
@@ -524,6 +525,7 @@ def test_resolve_clawteam_executable_ignores_relative_argv0_even_if_local_file_e
 def test_resolve_clawteam_executable_accepts_relative_path_with_explicit_directory(
     monkeypatch, tmp_path
 ):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     relative_bin = tmp_path / ".venv" / "bin" / "clawteam"
     relative_bin.parent.mkdir(parents=True)
     relative_bin.write_text("#!/bin/sh\n")
