@@ -2473,7 +2473,7 @@ def _bootstrap_entry_tasks(
                 f"Bootstrap entry task {task.id}. This is a launch-time first-hop release; "
                 "start now and follow the workflow as declared."
             ),
-            respawn=True,
+            respawn=False,
             repo=repo,
             release_notifier=notify_task_release,
         )
