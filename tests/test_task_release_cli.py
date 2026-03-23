@@ -734,4 +734,5 @@ def test_task_release_replacement_cleanup_requires_started_unfinished_work(monke
     assert len(backend.calls) == 1
     assert "previous worker runtime was replaced" in backend.calls[0]["prompt"]
     assert store.get(task.id) is None
-    assert store.get(downstream.id) is None
+    assert store.get(downstream.id) is not None
+    assert store.get(downstream.id).status == TaskStatus.blocked

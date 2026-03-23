@@ -334,7 +334,7 @@ class TestDurationTracking:
 
 
 class TestReplacementCleanup:
-    def test_clear_unfinished_tasks_for_owner_removes_pending_in_progress_and_blocked(self, store):
+    def test_clear_unfinished_tasks_for_owner_removes_only_started_owner_tasks(self, store):
         keep = store.create("keep", owner="bob")
         pending = store.create("pending", owner="alice")
         with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
@@ -346,24 +346,30 @@ class TestReplacementCleanup:
 
         cleared = store.clear_unfinished_tasks_for_owner("alice")
 
-        assert {task.id for task in cleared} == {pending.id, in_progress.id, blocked.id}
-        assert store.get(pending.id) is None
+        assert {task.id for task in cleared} == {in_progress.id}
+        assert store.get(pending.id) is not None
         assert store.get(in_progress.id) is None
-        assert store.get(blocked.id) is None
+        assert store.get(blocked.id) is not None
         assert store.get(completed.id) is not None
         assert store.get(keep.id) is not None
 
-    def test_clear_unfinished_tasks_for_owner_cascades_to_unfinished_dependents(self, store):
-        root = store.create("impl", owner="alice")
-        downstream = store.create("qa", owner="qa1", blocked_by=[root.id])
-        completed_downstream = store.create("archived", owner="qa2", blocked_by=[root.id])
+    def test_clear_unfinished_tasks_for_owner_cascades_only_to_started_unfinished_dependents(self, store):
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            root = store.create("impl", owner="alice")
+            store.update(root.id, status=TaskStatus.in_progress, caller="alice")
+            downstream_started = store.create("qa-started", owner="qa1", blocked_by=[root.id])
+            store.update(downstream_started.id, status=TaskStatus.in_progress, caller="qa1")
+        downstream_never_started = store.create("qa-blocked", owner="qa2", blocked_by=[root.id])
+        completed_downstream = store.create("archived", owner="qa3", blocked_by=[root.id])
         store.update(completed_downstream.id, status=TaskStatus.completed)
 
         cleared = store.clear_unfinished_tasks_for_owner("alice")
 
-        assert {task.id for task in cleared} == {root.id, downstream.id}
+        assert {task.id for task in cleared} == {root.id, downstream_started.id}
         assert store.get(root.id) is None
-        assert store.get(downstream.id) is None
+        assert store.get(downstream_started.id) is None
+        assert store.get(downstream_never_started.id) is not None
+        assert store.get(downstream_never_started.id).status == TaskStatus.blocked
         assert store.get(completed_downstream.id) is not None
 
 

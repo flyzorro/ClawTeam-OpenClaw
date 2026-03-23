@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import clawteam.worker_runtime as worker_runtime
 from clawteam.spawn.subprocess_backend import SubprocessBackend
@@ -920,13 +921,15 @@ def test_clear_replaced_worker_unfinished_tasks_same_instance_id_keeps_tasks(
     assert store.get(task.id).status == TaskStatus.pending
 
 
-def test_clear_replaced_worker_unfinished_tasks_different_instance_id_clears_tasks(
+def test_clear_replaced_worker_unfinished_tasks_different_instance_id_clears_started_tasks(
     monkeypatch,
     tmp_path,
 ):
     _seed_team(tmp_path, monkeypatch)
     store = TaskStore("demo")
     task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
 
     monkeypatch.setattr(
         "clawteam.spawn.registry.get_agent_record",
