@@ -2100,6 +2100,7 @@ def identity_set(
     agent_type: Optional[str] = typer.Option(None, "--agent-type", help="Agent type"),
     team: Optional[str] = typer.Option(None, "--team", help="Team name"),
     data_dir: Optional[str] = typer.Option(None, "--data-dir", help="ClawTeam data dir"),
+    task_execution_id: Optional[str] = typer.Option(None, "--task-execution-id", help="Active task execution id"),
     shell: bool = typer.Option(False, "--shell", help="Print pure shell export lines only"),
 ):
     """Print shell export commands to set identity environment variables."""
@@ -2116,6 +2117,9 @@ def identity_set(
         lines.append(f"export CLAWTEAM_TEAM_NAME={shlex.quote(team)}")
     if data_dir:
         lines.append(f"export CLAWTEAM_DATA_DIR={shlex.quote(data_dir)}")
+    resolved_execution_id = task_execution_id or os.environ.get("CLAWTEAM_TASK_EXECUTION_ID") or None
+    if resolved_execution_id:
+        lines.append(f"export CLAWTEAM_TASK_EXECUTION_ID={shlex.quote(resolved_execution_id)}")
 
     if not lines:
         console.print("[yellow]No options specified. Use --agent-id, --agent-name, --agent-type, --team, --data-dir[/yellow]")
