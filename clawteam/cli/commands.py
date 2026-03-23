@@ -1857,8 +1857,7 @@ def spawn_agent(
         raise typer.Exit(1)
 
     # Workspace: resolve from flag or config (default: auto)
-    repo_root = str(Path(repo or os.getcwd()).resolve())
-    cwd = repo_root
+    cwd = None
     ws_branch = ""
     ws_mode = ""
     ws_mgr = None
@@ -2601,7 +2600,6 @@ def launch_team(
         raise typer.Exit(1)
 
     # 7. Workspace setup (optional)
-    repo_root = str(Path(repo or os.getcwd()).resolve())
     ws_mgr = None
     if workspace:
         from clawteam.workspace import get_workspace_manager
@@ -2626,8 +2624,8 @@ def launch_team(
             agent_name=agent.name,
         )
 
-        # Workspace / source-of-truth cwd
-        cwd = repo_root
+        # Workspace
+        cwd = None
         ws_branch = ""
         if ws_mgr:
             ws_info = ws_mgr.create_workspace(
