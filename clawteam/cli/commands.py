@@ -2659,6 +2659,11 @@ def launch_team(
             cwd=cwd,
             skip_permissions=_skip,
         )
+        if isinstance(result, str) and result.startswith("Error:"):
+            console.print(
+                f"[red]Failed to spawn agent '{agent.name}' during launch:[/red] {result}"
+            )
+            raise typer.Exit(1)
         spawned.append({"name": agent.name, "id": a_id, "type": agent.type, "result": result})
 
     # 9. Bootstrap entry tasks so wake-gated workers can start the flow
