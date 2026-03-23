@@ -18,17 +18,21 @@ def _looks_like_clawteam_entrypoint(value: str) -> bool:
 def resolve_clawteam_executable() -> str:
     """Resolve the current clawteam executable.
 
-    Prefer an explicit ``CLAWTEAM_BIN`` override exported by the launcher, then
-    the current process entrypoint when running from a venv or editable install
-    via an absolute path. Fall back to ``shutil.which("clawteam")``, then the
-    bare command name.
+    Prefer an explicitly pinned ``CLAWTEAM_BIN`` first so respawn/release flows
+    stay on the same runtime binary as the original launcher. Fall back to the
+    current process entrypoint when running from a venv or editable install via
+    an absolute path. Then fall back to ``shutil.which("clawteam")`` and finally
+    the bare command name.
     """
 
-    env_bin = (os.environ.get("CLAWTEAM_BIN") or "").strip()
-    if env_bin:
-        candidate = Path(env_bin).expanduser()
+    pinned = (os.environ.get("CLAWTEAM_BIN") or "").strip()
+    if pinned:
+        candidate = Path(pinned).expanduser()
         if candidate.is_file():
             return str(candidate.resolve())
+        if candidate.is_absolute():
+            return str(candidate)
+        return pinned
 
     argv0 = (sys.argv[0] or "").strip()
     if argv0 and _looks_like_clawteam_entrypoint(argv0):

@@ -473,20 +473,20 @@ def test_subprocess_backend_normalizes_nanobot_and_uses_message_flag(monkeypatch
     assert "nanobot agent -w /tmp/demo -m 'do work'" in captured["cmd"]
 
 
-def test_resolve_clawteam_executable_prefers_explicit_env_bin(monkeypatch, tmp_path):
-    env_bin = tmp_path / "venv" / "bin" / "clawteam"
-    env_bin.parent.mkdir(parents=True)
-    env_bin.write_text("#!/bin/sh\n")
+def test_resolve_clawteam_executable_prefers_pinned_env(monkeypatch, tmp_path):
+    pinned = tmp_path / "custom" / "bin" / "clawteam"
+    pinned.parent.mkdir(parents=True)
+    pinned.write_text("#!/bin/sh\n")
     fallback_bin = tmp_path / "fallback" / "clawteam"
     fallback_bin.parent.mkdir(parents=True)
     fallback_bin.write_text("#!/bin/sh\n")
 
-    monkeypatch.setenv("CLAWTEAM_BIN", str(env_bin))
+    monkeypatch.setenv("CLAWTEAM_BIN", str(pinned))
     monkeypatch.setattr(sys, "argv", ["python"])
     monkeypatch.setattr("clawteam.spawn.cli_env.shutil.which", lambda name: str(fallback_bin))
 
-    assert resolve_clawteam_executable() == str(env_bin.resolve())
-    assert build_spawn_path("/usr/bin:/bin").startswith(f"{env_bin.parent.resolve()}:")
+    assert resolve_clawteam_executable() == str(pinned.resolve())
+    assert build_spawn_path("/usr/bin:/bin").startswith(f"{pinned.parent.resolve()}:")
 
 
 def test_resolve_clawteam_executable_ignores_unrelated_argv0(monkeypatch, tmp_path):
