@@ -67,6 +67,15 @@ class TestModels:
         t = TaskDef(subject="Run QA", stage="qa")
         assert t.stage == "qa"
 
+    def test_task_def_message_contract(self):
+        t = TaskDef(
+            subject="Run QA",
+            message_type="QA_RESULT",
+            required_sections=["status", "summary", "evidence"],
+        )
+        assert t.message_type == "QA_RESULT"
+        assert t.required_sections == ["status", "summary", "evidence"]
+
     def test_template_def_defaults(self):
         leader = AgentDef(name="lead")
         t = TemplateDef(name="my-tmpl", leader=leader)
@@ -181,6 +190,19 @@ class TestLoadBuiltinTemplate:
         assert by_subject["Review code quality, maintainability, and delivery readiness"].on_fail == [
             "Implement backend/data changes with real validation",
             "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Implement backend/data changes with real validation"].message_type == "DEV_RESULT"
+        assert by_subject["Implement frontend/UI changes with real validation"].message_type == "DEV_RESULT"
+        assert by_subject["Run main-flow QA on the real change"].message_type == "QA_RESULT"
+        assert by_subject["Run edge-case and regression QA on the real change"].message_type == "QA_RESULT"
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].message_type == "REVIEW_RESULT"
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].required_sections == [
+            "decision",
+            "summary",
+            "required_fixes",
+            "evidence",
+            "validation",
+            "next_action",
         ]
 
 

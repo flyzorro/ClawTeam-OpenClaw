@@ -70,6 +70,8 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert "--shell" in prompt
     assert "Workflow routing is owned by the leader/template/state machine" in prompt
     assert "Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges" in prompt
+    assert "Use structured result blocks instead of free-form prose" in prompt
+    assert "QA_RESULT must include exactly these headings" in prompt
 
 
 def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_path):

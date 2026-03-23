@@ -78,6 +78,16 @@ def build_worker_task_prompt(
         f"- When the task is truly complete, run `clawteam task update {team_name} {task.id} --status completed`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",
+        "- Use structured result blocks instead of free-form prose.",
+        "- Keep summary, evidence, validation, and next action in separate sections.",
+        "- Do not mix optional suggestions into required fixes.",
+        "- If a section has no content, write `none` instead of omitting the section.",
+        "",
+        "## Result Block Formats",
+        "- DEV_RESULT must include exactly these headings: status, summary, changed_files, validation, known_issues, next_action.",
+        "- QA_RESULT must include exactly these headings: status, summary, evidence, validation, risk, next_action.",
+        "- REVIEW_RESULT must include exactly these headings: decision, summary, required_fixes, evidence, validation, next_action.",
+        "- Keep required_fixes limited to must-fix items; put nice-to-have ideas outside that section or write `none`.",
     ])
     return "\n".join(lines)
 
