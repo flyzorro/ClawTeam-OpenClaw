@@ -7,7 +7,7 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     data_dir = "/tmp/clawteam data dir"
     pinned = "/tmp/custom bin/clawteam"
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", data_dir)
-    monkeypatch.setenv("CLAWTEAM_BIN", pinned)
+    monkeypatch.setattr("clawteam.spawn.prompt.resolve_clawteam_executable", lambda: pinned)
 
     prompt = build_agent_prompt(
         agent_name="qa one",

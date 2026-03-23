@@ -15,6 +15,14 @@ class DummyBackend:
         return []
 
 
+class FailingBackend:
+    def spawn(self, **kwargs):
+        return "Error: agent command 'openclaw' exited immediately after launch."
+
+    def list_running(self):
+        return []
+
+
 def test_launch_template_creates_blocked_by_chain(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: DummyBackend())
@@ -77,6 +85,36 @@ def test_launch_template_creates_blocked_by_chain(monkeypatch, tmp_path):
     wake_keys = {msg.key for msg in leader_mail}
     assert f"task-wake:{scope.id}" in wake_keys
     assert all(f"task-wake:{task.id}" not in wake_keys for task in [setup, backend, frontend, qa_main, qa_reg, review, deliver])
+
+
+def test_launch_template_fails_closed_when_agent_spawn_errors(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: FailingBackend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "launch",
+            "five-step-delivery",
+            "--team-name",
+            "launch-fail-demo",
+            "--goal",
+            "fail closed on spawn error",
+            "--no-workspace",
+        ],
+        env={"CLAWTEAM_DATA_DIR": str(tmp_path)},
+    )
+
+    assert result.exit_code == 1
+    assert "Failed to spawn agent 'leader' during launch" in result.output
+    assert "launch-fail-demo" not in result.output or "launched from template" not in result.output
+
+    store = TaskStore("launch-fail-demo")
+    tasks = store.list_tasks()
+    assert len(tasks) == 8
+    leader_mail = MailboxManager("launch-fail-demo").peek("leader")
+    assert leader_mail == []
 
 
 def test_launch_template_bootstraps_multiple_root_tasks(monkeypatch, tmp_path):
