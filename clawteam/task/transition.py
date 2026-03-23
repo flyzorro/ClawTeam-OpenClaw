@@ -216,6 +216,12 @@ def plan_execution_scoped_terminal_writeback(
 ) -> TaskTransitionDecision | None:
     if requested_status not in (TaskStatus.completed, TaskStatus.failed):
         return None
+    if existing.blocked_by or existing.status == TaskStatus.blocked:
+        return TaskTransitionDecision(
+            accepted=False,
+            case_name=EXECUTION_TERMINAL_CASE,
+            rejection_reason="task_still_blocked",
+        )
     if not execution_id:
         if existing.active_execution_id and existing.active_execution_owner == caller:
             return TaskTransitionDecision(

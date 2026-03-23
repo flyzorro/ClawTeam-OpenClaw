@@ -106,12 +106,15 @@ class RuntimeOrchestrator:
 
 
 def _task_has_started_execution(task: TaskItem) -> bool:
+    """Return True only when there is evidence of current unfinished execution.
+
+    Historical evidence from a prior completed attempt (for example a reopened task
+    that still has started_at/duration history) must not force replacement cleanup
+    for the new pending task.
+    """
     return bool(
-        task.started_at
-        or task.execution_seq
-        or task.active_execution_id
+        task.active_execution_id
         or task.active_execution_owner
-        or task.last_terminal_execution_id
         or task.locked_by
         or task.status == TaskStatus.in_progress
     )
