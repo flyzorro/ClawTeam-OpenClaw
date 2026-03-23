@@ -5,7 +5,9 @@ from clawteam.spawn.prompt import build_agent_prompt
 
 def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch):
     data_dir = "/tmp/clawteam data dir"
+    pinned = "/tmp/custom bin/clawteam"
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", data_dir)
+    monkeypatch.setenv("CLAWTEAM_BIN", pinned)
 
     prompt = build_agent_prompt(
         agent_name="qa one",
@@ -19,13 +21,14 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     expected_bootstrap = (
         "`eval $(CLAWTEAM_AGENT_NAME='qa one' CLAWTEAM_AGENT_ID=qa-1 "
         "CLAWTEAM_AGENT_TYPE=general-purpose CLAWTEAM_TEAM_NAME='demo team' "
-        "CLAWTEAM_DATA_DIR='/tmp/clawteam data dir' clawteam identity set "
+        "CLAWTEAM_BIN='/tmp/custom bin/clawteam' CLAWTEAM_DATA_DIR='/tmp/clawteam data dir' '/tmp/custom bin/clawteam' identity set "
         "--agent-name 'qa one' --agent-id qa-1 --agent-type general-purpose "
         "--team 'demo team' --data-dir '/tmp/clawteam data dir' --shell)`"
     )
 
     assert expected_bootstrap in prompt
-    assert "clawteam identity set" in prompt
+    assert "'/tmp/custom bin/clawteam' identity set" in prompt
+    assert "'/tmp/custom bin/clawteam' task update demo team <task-id> --status completed" in prompt
     assert "--shell" in prompt
     assert "--data-dir '/tmp/clawteam data dir'" in prompt
     assert "Workflow topology belongs to the leader/template/state machine" in prompt
