@@ -26,6 +26,7 @@ from clawteam.services import (
     TaskUpdateContext,
     TaskUpdateRequest,
     describe_release_action,
+    describe_replacement_decision,
     execute_task_release,
     execute_task_update,
     release_task_to_owner,
@@ -1013,10 +1014,20 @@ def task_update(
                     console.print(f"  Workspace: {d['spawn']['cwd']}")
             else:
                 console.print("  Respawned: no")
-            if d.get("replacementRequired"):
+            replacement = d.get("replacement") or {}
+            replacement_required = replacement.get("replacement_required", d.get("replacementRequired"))
+            replacement_reason = replacement.get("reason") or d.get("replacementReason")
+            if replacement_reason and replacement_reason != "alive":
+                label = "Replacement cleanup" if replacement_required else "Replacement decision"
+                detail = (
+                    f"cleared {len(d.get('clearedTaskIds', []))} unfinished task(s); "
+                    if replacement_required
+                    else "no cleanup applied; "
+                )
+                suffix = "leader must re-dispatch fresh tasks." if replacement_required else ""
                 console.print(
-                    f"  Replacement cleanup: cleared {len(d.get('clearedTaskIds', []))} unfinished task(s); "
-                    "leader must re-dispatch fresh tasks."
+                    f"  {label}: {detail}{describe_replacement_decision(d)}"
+                    + (f"; {suffix}" if suffix else "")
                 )
             for release in d.get("autoReleasedTasks", []):
                 console.print(describe_release_action(release))
@@ -1088,10 +1099,20 @@ def task_release(
                 console.print(f"  Workspace: {d['spawn']['cwd']}")
         else:
             console.print("  Respawned: no")
-        if d.get("replacementRequired"):
+        replacement = d.get("replacement") or {}
+        replacement_required = replacement.get("replacement_required", d.get("replacementRequired"))
+        replacement_reason = replacement.get("reason") or d.get("replacementReason")
+        if replacement_reason and replacement_reason != "alive":
+            label = "Replacement cleanup" if replacement_required else "Replacement decision"
+            detail = (
+                f"cleared {len(d.get('clearedTaskIds', []))} unfinished task(s); "
+                if replacement_required
+                else "no cleanup applied; "
+            )
+            suffix = "leader must re-dispatch fresh tasks." if replacement_required else ""
             console.print(
-                f"  Replacement cleanup: cleared {len(d.get('clearedTaskIds', []))} unfinished task(s); "
-                "leader must re-dispatch fresh tasks."
+                f"  {label}: {detail}{describe_replacement_decision(d)}"
+                + (f"; {suffix}" if suffix else "")
             )
 
     _output(data, _human)

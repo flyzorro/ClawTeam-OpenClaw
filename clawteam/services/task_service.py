@@ -91,15 +91,27 @@ def execute_task_release(
     return TaskReleaseResult(task=task, release=release)
 
 
+def describe_replacement_decision(release: dict[str, Any]) -> str:
+    replacement = release.get("replacement") or {}
+    reason = replacement.get("reason") or release.get("replacementReason") or "unknown"
+    replaced_execution_id = replacement.get("replaced_execution_id")
+    if replaced_execution_id:
+        return f"reason={reason}, replaced_execution_id={replaced_execution_id}"
+    return f"reason={reason}"
+
+
+
 def describe_release_action(release: dict[str, Any]) -> str:
-    if release.get("replacementRequired"):
+    if (release.get("replacement") or {}).get("replacement_required", release.get("replacementRequired")):
         return (
             f"  Replacement cleanup for {release['owner']} task {release['taskId']}: "
-            f"cleared {len(release.get('clearedTaskIds', []))} unfinished task(s); leader must re-dispatch."
+            f"cleared {len(release.get('clearedTaskIds', []))} unfinished task(s); "
+            f"{describe_replacement_decision(release)}; leader must re-dispatch."
         )
     return (
         f"  Auto-notified {release['owner']} for task {release['taskId']}"
         + (f" and respawned via {release['spawn'].get('backend', '')}" if release.get("respawned") else "")
+        + f" ({describe_replacement_decision(release)})"
     )
 
 

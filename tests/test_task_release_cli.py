@@ -7,10 +7,11 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from clawteam.cli.commands import app
-from clawteam.runtime.orchestrator import RuntimeOrchestrator
+from clawteam.runtime.orchestrator import RuntimeOrchestrator, plan_replacement
 from clawteam.services.task_service import (
     TaskReleaseContext,
     TaskReleaseRequest,
+    describe_release_action,
     execute_task_release,
 )
 from clawteam.team.mailbox import MailboxManager
@@ -70,6 +71,46 @@ def _team_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
+def test_plan_replacement_requires_replacement_for_started_stale_execution(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", owner="qa1")
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        task = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
+
+    decision = plan_replacement(store=store, task=task, state_before="stale", respawn=True)
+
+    assert decision.owner == "qa1"
+    assert decision.replacement_required is True
+    assert decision.replaced_execution_id == task.active_execution_id
+    assert decision.reason == "stale"
+
+
+
+def test_plan_replacement_preserves_missing_owner_without_started_execution(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", owner="qa1")
+
+    decision = plan_replacement(store=store, task=task, state_before="missing", respawn=True)
+
+    assert decision.owner == "qa1"
+    assert decision.replacement_required is False
+    assert decision.replaced_execution_id is None
+    assert decision.reason == "missing"
+
+
+
 def test_runtime_orchestrator_release_to_owner_respawns_missing_owner(monkeypatch, tmp_path):
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
@@ -93,7 +134,17 @@ def test_runtime_orchestrator_release_to_owner_respawns_missing_owner(monkeypatc
 
     assert release["respawned"] is True
     assert release["replacementRequired"] is False
+    assert release["replacementReason"] == "missing"
+    assert release["replacedExecutionId"] is None
+    assert release["replacement"] == {
+        "owner": "qa1",
+        "replacement_required": False,
+        "replaced_execution_id": None,
+        "reason": "missing",
+    }
     assert len(backend.calls) == 1
+
+
     call = backend.calls[0]
     assert call["agent_name"] == "qa1"
     assert call["cwd"] == str(workspace)
@@ -133,6 +184,67 @@ def test_runtime_orchestrator_respawn_reuses_pinned_clawteam_bin(monkeypatch, tm
     assert len(backend.calls) == 1
     call = backend.calls[0]
     assert call["env"]["CLAWTEAM_BIN"] == str(pinned)
+
+
+def test_describe_release_action_prefers_structured_replacement_decision():
+    text = describe_release_action(
+        {
+            "owner": "qa1",
+            "taskId": "task-1",
+            "replacement": {
+                "owner": "qa1",
+                "replacement_required": True,
+                "replaced_execution_id": "exec-123",
+                "reason": "stale",
+            },
+            "clearedTaskIds": ["task-1"],
+        }
+    )
+
+    assert "Replacement cleanup for qa1 task task-1" in text
+    assert "reason=stale" in text
+    assert "replaced_execution_id=exec-123" in text
+
+
+
+def test_runtime_orchestrator_release_to_owner_exposes_replacement_decision(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", description="Check company directory", owner="qa1")
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        task = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
+
+    workspace = tmp_path / "qa1-worktree"
+    workspace.mkdir()
+    _write_workspace_registry("demo", "qa1", workspace, tmp_path)
+
+    backend = RecordingBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.registry.get_agent_runtime_state", lambda *_: "stale")
+    monkeypatch.setattr("clawteam.spawn.registry.terminate_agent", lambda *_: True)
+
+    orchestrator = RuntimeOrchestrator(team="demo", repo=str(tmp_path))
+    release = orchestrator.release_to_owner(task, caller="leader", message="Start immediately", respawn=True)
+
+    assert release["messageSent"] is False
+    assert release["replacementRequired"] is True
+    assert release["replacementReason"] == "stale"
+    assert release["replacedExecutionId"] == task.active_execution_id
+    assert release["replacement"] == {
+        "owner": "qa1",
+        "replacement_required": True,
+        "replaced_execution_id": task.active_execution_id,
+        "reason": "stale",
+    }
+    assert release["terminatedStale"] is True
+    assert release["respawned"] is True
+    assert len(backend.calls) == 1
+
 
 
 def test_execute_task_release_uses_injected_context(monkeypatch, tmp_path):
@@ -769,6 +881,8 @@ def test_task_release_replacement_cleanup_requires_started_unfinished_work(monke
     assert result.exit_code == 0, result.output
     assert len(backend.calls) == 1
     assert "previous worker runtime was replaced" in backend.calls[0]["prompt"]
+    assert "Replacement decision: no cleanup applied; reason=stale" in result.output
+    assert f"replaced_execution_id={claimed.active_execution_id}" not in result.output
     assert store.get(task.id) is not None
     assert store.get(task.id).status == TaskStatus.pending
     assert store.get(downstream.id) is not None
