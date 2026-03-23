@@ -18,6 +18,7 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.delivery.release_notifier import notify_task_release
+from clawteam.templates import render_task
 from clawteam.services import (
     RuntimeOrchestrator,
     TaskReleaseContext,
