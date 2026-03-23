@@ -1899,6 +1899,7 @@ def spawn_agent(
             user=_os.environ.get("CLAWTEAM_USER", ""),
             workspace_dir=cwd or "",
             workspace_branch=ws_branch,
+            memory_scope=f"custom:team-{_team}",
         )
 
     # Session resume: inject --resume flag for claude commands
@@ -2593,6 +2594,7 @@ def launch_team(
             user=_os.environ.get("CLAWTEAM_USER", ""),
             workspace_dir=cwd or "",
             workspace_branch=ws_branch,
+            memory_scope=f"custom:team-{t_name}",
         )
 
         # Resolve skip_permissions from config
