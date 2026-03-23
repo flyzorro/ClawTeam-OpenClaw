@@ -11,6 +11,7 @@ from clawteam.runtime.orchestrator import RuntimeOrchestrator, plan_replacement
 from clawteam.services.task_service import (
     TaskReleaseContext,
     TaskReleaseRequest,
+    describe_release_action,
     execute_task_release,
 )
 from clawteam.team.mailbox import MailboxManager
@@ -142,6 +143,8 @@ def test_runtime_orchestrator_release_to_owner_respawns_missing_owner(monkeypatc
         "reason": "missing",
     }
     assert len(backend.calls) == 1
+
+
     call = backend.calls[0]
     assert call["agent_name"] == "qa1"
     assert call["cwd"] == str(workspace)
@@ -181,6 +184,27 @@ def test_runtime_orchestrator_respawn_reuses_pinned_clawteam_bin(monkeypatch, tm
     assert len(backend.calls) == 1
     call = backend.calls[0]
     assert call["env"]["CLAWTEAM_BIN"] == str(pinned)
+
+
+def test_describe_release_action_prefers_structured_replacement_decision():
+    text = describe_release_action(
+        {
+            "owner": "qa1",
+            "taskId": "task-1",
+            "replacement": {
+                "owner": "qa1",
+                "replacement_required": True,
+                "replaced_execution_id": "exec-123",
+                "reason": "stale",
+            },
+            "clearedTaskIds": ["task-1"],
+        }
+    )
+
+    assert "Replacement cleanup for qa1 task task-1" in text
+    assert "reason=stale" in text
+    assert "replaced_execution_id=exec-123" in text
+
 
 
 def test_runtime_orchestrator_release_to_owner_exposes_replacement_decision(monkeypatch, tmp_path):
@@ -857,6 +881,8 @@ def test_task_release_replacement_cleanup_requires_started_unfinished_work(monke
     assert result.exit_code == 0, result.output
     assert len(backend.calls) == 1
     assert "previous worker runtime was replaced" in backend.calls[0]["prompt"]
+    assert "Replacement decision: no cleanup applied; reason=stale" in result.output
+    assert f"replaced_execution_id={claimed.active_execution_id}" not in result.output
     assert store.get(task.id) is not None
     assert store.get(task.id).status == TaskStatus.pending
     assert store.get(downstream.id) is not None
