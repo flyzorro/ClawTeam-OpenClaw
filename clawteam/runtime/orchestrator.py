@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from clawteam.team.models import TaskItem
+from clawteam.team.models import TaskItem, TaskStatus
 
 
 @dataclass(frozen=True)
@@ -41,12 +41,14 @@ class RuntimeOrchestrator:
         cleared_tasks: list[TaskItem] = []
 
         if respawn and state_before in {"dead", "stale"}:
-            replacement_required = True
             store = TaskStore(self.team)
-            cleared_tasks = store.clear_unfinished_tasks_for_owner(task.owner)
             member = TeamManager.get_member(self.team, task.owner)
             if member is None:
                 raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
+            started_unfinished_tasks = _started_unfinished_tasks_for_owner(store, task.owner)
+            replacement_required = bool(started_unfinished_tasks)
+            if replacement_required:
+                cleared_tasks = store.clear_unfinished_tasks_for_owner(task.owner)
             if state_before == "stale":
                 terminated_stale = terminate_agent(self.team, task.owner)
             spawn_info = _spawn_existing_agent(
@@ -56,8 +58,12 @@ class RuntimeOrchestrator:
                 agent_type=member.agent_type,
                 task_prompt=(
                     "Your previous worker runtime was replaced. "
-                    "All unfinished tasks previously assigned to you were cleared. "
-                    "Do not resume old work. Wait for the leader to dispatch fresh tasks."
+                    + (
+                        "All unfinished tasks previously assigned to you were cleared. "
+                        "Do not resume old work. Wait for the leader to dispatch fresh tasks."
+                        if replacement_required
+                        else "No claimed unfinished task was preserved from the old runtime. Wait for or consume the fresh wake for your current task."
+                    )
                 ),
                 repo=self.repo,
                 resume=False,
@@ -97,6 +103,27 @@ class RuntimeOrchestrator:
             "clearedTaskSubjects": [item.subject for item in cleared_tasks],
             **(notifier_result or {}),
         }
+
+
+def _task_has_started_execution(task: TaskItem) -> bool:
+    return bool(
+        task.started_at
+        or task.execution_seq
+        or task.active_execution_id
+        or task.active_execution_owner
+        or task.last_terminal_execution_id
+        or task.locked_by
+        or task.status == TaskStatus.in_progress
+    )
+
+
+def _started_unfinished_tasks_for_owner(store, owner: str) -> list[TaskItem]:
+    return [
+        candidate
+        for candidate in store.list_tasks(owner=owner)
+        if candidate.status in {TaskStatus.pending, TaskStatus.blocked, TaskStatus.in_progress}
+        and _task_has_started_execution(candidate)
+    ]
 
 
 def _workspace_registry_path(team_name: str) -> Path:
