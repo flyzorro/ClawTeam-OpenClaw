@@ -35,6 +35,8 @@ class TaskDef(BaseModel):
     stage: str = ""
     blocked_by: list[str] = []
     on_fail: list[str] = []
+    message_type: str = ""
+    required_sections: list[str] = []
 
 
 class TemplateDef(BaseModel):

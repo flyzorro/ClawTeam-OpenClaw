@@ -262,6 +262,8 @@ Report:
 subject = "Implement backend/data changes with real validation"
 owner = "dev1"
 stage = "implement"
+message_type = "DEV_RESULT"
+required_sections = ["status", "summary", "changed_files", "validation", "known_issues", "next_action"]
 blocked_by = ["Prepare repo, branch, env, and runnable baseline"]
 description = """Goal:
 只完成本次最小必要的后端/数据/API 修改，并做真实本地验证。
@@ -282,19 +284,25 @@ Do not:
 - 不要把“理论上能行”当成完成
 - 不要跳过验证直接交付
 
-Report:
-- Files changed
-- Why changed
-- Commands executed
-- Real results
-- Known risks / remaining uncertainty
-- Handoff notes for QA
+Report as exact block:
+DEV_RESULT
+status: <completed|blocked>
+summary: <short result>
+changed_files:
+- <file + why>
+validation:
+- <command + actual result>
+known_issues:
+- <risk or none>
+next_action: <handoff to QA>
 """
 
 [[template.tasks]]
 subject = "Implement frontend/UI changes with real validation"
 owner = "dev2"
 stage = "implement"
+message_type = "DEV_RESULT"
+required_sections = ["status", "summary", "changed_files", "validation", "known_issues", "next_action"]
 blocked_by = ["Prepare repo, branch, env, and runnable baseline"]
 description = """Goal:
 只完成本次最小必要的前端/UI/交互修改，并做真实本地验证。
@@ -315,19 +323,25 @@ Do not:
 - 不要把“理论上能行”当成完成
 - 不要跳过验证直接交付
 
-Report:
-- Files changed
-- Why changed
-- Commands executed
-- Real results
-- Known risks / remaining uncertainty
-- Handoff notes for QA
+Report as exact block:
+DEV_RESULT
+status: <completed|blocked>
+summary: <short result>
+changed_files:
+- <file + why>
+validation:
+- <command + actual result>
+known_issues:
+- <risk or none>
+next_action: <handoff to QA>
 """
 
 [[template.tasks]]
 subject = "Run main-flow QA on the real change"
 owner = "qa1"
 stage = "qa"
+message_type = "QA_RESULT"
+required_sections = ["status", "summary", "evidence", "validation", "risk", "next_action"]
 blocked_by = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
 on_fail = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
 description = """Goal:
@@ -350,19 +364,25 @@ Do not:
 - 不要只说 looks good 而没有证据
 - 不要自己临时新建 repair task 或改 workflow 依赖边；失败时按约定提交 failed，让状态机回流
 
-Report:
-- Test scenarios executed
-- Actual result for each scenario
-- Pass/fail summary
-- Repro steps for failures
-- Risk assessment
-- Recommendation: back to Implement or move to Review
+Report as exact block:
+QA_RESULT
+status: <pass|fail|blocked>
+summary: <short result>
+evidence:
+- <repro/result evidence>
+validation:
+- <command or scenario + actual result>
+risk:
+- <risk or none>
+next_action: <back to implement | move to review>
 """
 
 [[template.tasks]]
 subject = "Run edge-case and regression QA on the real change"
 owner = "qa2"
 stage = "qa"
+message_type = "QA_RESULT"
+required_sections = ["status", "summary", "evidence", "validation", "risk", "next_action"]
 blocked_by = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
 on_fail = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
 description = """Goal:
@@ -385,19 +405,25 @@ Do not:
 - 不要只说 looks good 而没有证据
 - 不要自己临时新建 repair task 或改 workflow 依赖边；失败时按约定提交 failed，让状态机回流
 
-Report:
-- Test scenarios executed
-- Actual result for each scenario
-- Pass/fail summary
-- Repro steps for failures
-- Risk assessment
-- Recommendation: back to Implement or move to Review
+Report as exact block:
+QA_RESULT
+status: <pass|fail|blocked>
+summary: <short result>
+evidence:
+- <repro/result evidence>
+validation:
+- <command or scenario + actual result>
+risk:
+- <risk or none>
+next_action: <back to implement | move to review>
 """
 
 [[template.tasks]]
 subject = "Review code quality, maintainability, and delivery readiness"
 owner = "review1"
 stage = "review"
+message_type = "REVIEW_RESULT"
+required_sections = ["decision", "summary", "required_fixes", "evidence", "validation", "next_action"]
 blocked_by = ["Run main-flow QA on the real change", "Run edge-case and regression QA on the real change"]
 on_fail = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
 description = """Goal:
@@ -419,12 +445,17 @@ Do not:
 - 不要忽略明显的结构、命名、边界和风险问题
 - 不要自己临时新建 repair task 或改 workflow 依赖边；失败时按约定提交 failed，让状态机回流
 
-Report:
-- Files/diff reviewed
-- Findings
-- Required fixes
-- Optional suggestions
-- Delivery recommendation
+Report as exact block:
+REVIEW_RESULT
+decision: <approve|return_to_implement>
+summary: <short result>
+required_fixes:
+- <must-fix item or none>
+evidence:
+- <file/line/diff/risk evidence>
+validation:
+- <review checks run or none>
+next_action: <move to deliver | return to implement>
 """
 
 [[template.tasks]]
