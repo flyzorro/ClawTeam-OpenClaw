@@ -217,6 +217,12 @@ def plan_execution_scoped_terminal_writeback(
     if requested_status not in (TaskStatus.completed, TaskStatus.failed):
         return None
     if not execution_id:
+        if existing.active_execution_id and existing.active_execution_owner == caller:
+            return TaskTransitionDecision(
+                accepted=False,
+                case_name=EXECUTION_TERMINAL_CASE,
+                rejection_reason="missing_execution_id",
+            )
         return None
     if not existing.active_execution_id:
         if existing.last_terminal_execution_id and execution_id == existing.last_terminal_execution_id:

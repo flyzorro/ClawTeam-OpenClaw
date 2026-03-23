@@ -23,6 +23,7 @@ def build_agent_prompt(
     workspace_dir: str = "",
     workspace_branch: str = "",
     memory_scope: str = "",
+    task_execution_id: str = "",
 ) -> str:
     """Build agent prompt: identity + task + optional workspace info."""
     clawteam_bin = resolve_clawteam_executable()
@@ -36,6 +37,8 @@ def build_agent_prompt(
     data_dir = os.environ.get("CLAWTEAM_DATA_DIR", "").strip()
     if data_dir:
         shell_env.append(("CLAWTEAM_DATA_DIR", data_dir))
+    if task_execution_id:
+        shell_env.append(("CLAWTEAM_TASK_EXECUTION_ID", task_execution_id))
     identity_prefix = " ".join(
         f"{key}={shlex.quote(value)}" for key, value in shell_env
     )

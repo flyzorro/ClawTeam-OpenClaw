@@ -8,7 +8,11 @@ from clawteam.team.tasks import TaskStore
 
 
 class DummyBackend:
+    def __init__(self):
+        self.calls = []
+
     def spawn(self, **kwargs):
+        self.calls.append(kwargs)
         return f"spawned:{kwargs.get('agent_name')}"
 
     def list_running(self):
@@ -24,8 +28,10 @@ class FailingBackend:
 
 
 def test_launch_template_creates_blocked_by_chain(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: DummyBackend())
+    backend_stub = DummyBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend_stub)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -85,6 +91,8 @@ def test_launch_template_creates_blocked_by_chain(monkeypatch, tmp_path):
     wake_keys = {msg.key for msg in leader_mail}
     assert f"task-wake:{scope.id}" in wake_keys
     assert all(f"task-wake:{task.id}" not in wake_keys for task in [setup, backend, frontend, qa_main, qa_reg, review, deliver])
+    assert backend_stub.calls
+    assert all(call["cwd"] == str(tmp_path.resolve()) for call in backend_stub.calls)
 
 
 def test_launch_template_fails_closed_when_agent_spawn_errors(monkeypatch, tmp_path):

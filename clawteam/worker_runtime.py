@@ -68,8 +68,20 @@ def build_worker_task_prompt(
         ])
     if task.description:
         lines.extend(["", "## Description", task.description])
+    shell_exports = [
+        ("CLAWTEAM_AGENT_NAME", agent_name),
+        ("CLAWTEAM_AGENT_ID", os.environ.get("CLAWTEAM_AGENT_ID", agent_name)),
+        ("CLAWTEAM_AGENT_TYPE", os.environ.get("CLAWTEAM_AGENT_TYPE", "general-purpose")),
+        ("CLAWTEAM_TEAM_NAME", team_name),
+        ("CLAWTEAM_DATA_DIR", os.environ.get("CLAWTEAM_DATA_DIR", "")),
+    ]
+    if getattr(task, "active_execution_id", ""):
+        shell_exports.append(("CLAWTEAM_TASK_EXECUTION_ID", task.active_execution_id))
+    shell_prefix = " ".join(
+        f"{key}={shlex.quote(str(value))}" for key, value in shell_exports if str(value)
+    )
     bootstrap = (
-        "eval $(clawteam identity set "
+        f"eval $({shell_prefix} clawteam identity set "
         f"--agent-name {shlex.quote(agent_name)} "
         f"--agent-id {shlex.quote(os.environ.get('CLAWTEAM_AGENT_ID', agent_name))} "
         f"--agent-type {shlex.quote(os.environ.get('CLAWTEAM_AGENT_TYPE', 'general-purpose'))} "

@@ -62,7 +62,9 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     )
 
     expected_bootstrap = (
-        "`eval $(clawteam identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
+        "`eval $(CLAWTEAM_AGENT_NAME='qa 1' CLAWTEAM_AGENT_ID='qa 1-id' "
+        "CLAWTEAM_AGENT_TYPE='general purpose' CLAWTEAM_TEAM_NAME='demo team' "
+        f"CLAWTEAM_DATA_DIR='{tmp_path / 'data dir'}' clawteam identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
         "--agent-type 'general purpose' --team 'demo team' "
         f"--data-dir '{tmp_path / 'data dir'}' --shell)`"
     )
