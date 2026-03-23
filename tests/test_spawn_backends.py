@@ -23,6 +23,7 @@ class DummyProcess:
 
 
 def test_subprocess_backend_prepends_current_clawteam_bin_to_path(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -85,6 +86,7 @@ def test_kill_duplicate_tmux_windows_keeps_lowest_index(monkeypatch):
 
 
 def test_tmux_backend_exports_spawn_path_for_agent_commands(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -242,6 +244,7 @@ def test_tmux_backend_returns_error_when_command_missing(monkeypatch, tmp_path):
 
 
 def test_subprocess_backend_terminates_existing_runtime_before_spawn(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -282,6 +285,7 @@ def test_subprocess_backend_terminates_existing_runtime_before_spawn(monkeypatch
 
 
 def test_subprocess_backend_returns_error_when_command_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
