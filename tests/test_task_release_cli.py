@@ -269,12 +269,13 @@ def test_task_release_respawns_dead_owner_before_wake(monkeypatch, tmp_path):
     assert call["agent_name"] == "qa1"
     assert call["cwd"] == str(workspace)
     assert "previous worker runtime was replaced" in call["prompt"]
-    assert "Do not resume old work" in call["prompt"]
-    assert "send" not in call_order
-    assert store.get(task.id) is None
+    assert "No claimed unfinished task was preserved" in call["prompt"]
+    assert "send" in call_order
+    assert store.get(task.id) is not None
+    assert store.get(task.id).status == TaskStatus.pending
 
     inbox = MailboxManager("demo")
-    assert inbox.peek("qa1") == []
+    assert any("Start immediately" in (msg.content or "") for msg in inbox.peek("qa1"))
 
 
 def test_task_update_wake_owner_respawns_dead_worker(monkeypatch, tmp_path):
@@ -724,5 +725,44 @@ def test_task_release_terminates_stale_owner_before_wake(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert len(backend.calls) == 1
     assert "terminate" in call_order
-    assert "send" not in call_order
+    assert "send" in call_order
+    assert store.get(task.id) is not None
+    assert store.get(task.id).status == TaskStatus.pending
+
+
+def test_task_release_replacement_cleanup_requires_started_unfinished_work(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "review1", "review1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", description="Check company directory", owner="qa1")
+    downstream = store.create("Review", owner="review1", blocked_by=[task.id])
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        claimed = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
+
+    workspace = tmp_path / "qa1-worktree"
+    workspace.mkdir()
+    _write_workspace_registry("demo", "qa1", workspace, tmp_path)
+
+    backend = RecordingBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.registry.get_agent_runtime_state", lambda *args, **kwargs: "stale")
+    monkeypatch.setattr("clawteam.spawn.registry.terminate_agent", lambda *args, **kwargs: True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["task", "release", "demo", task.id, "--message", "Resume after replacement"],
+        env={**env, "CLAWTEAM_TASK_EXECUTION_ID": claimed.active_execution_id},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(backend.calls) == 1
+    assert "previous worker runtime was replaced" in backend.calls[0]["prompt"]
     assert store.get(task.id) is None
+    assert store.get(downstream.id) is not None
+    assert store.get(downstream.id).status == TaskStatus.blocked

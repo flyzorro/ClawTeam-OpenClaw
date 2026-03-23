@@ -23,6 +23,7 @@ class DummyProcess:
 
 
 def test_subprocess_backend_prepends_current_clawteam_bin_to_path(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -85,6 +86,7 @@ def test_kill_duplicate_tmux_windows_keeps_lowest_index(monkeypatch):
 
 
 def test_tmux_backend_exports_spawn_path_for_agent_commands(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -242,6 +244,7 @@ def test_tmux_backend_returns_error_when_command_missing(monkeypatch, tmp_path):
 
 
 def test_subprocess_backend_terminates_existing_runtime_before_spawn(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -282,6 +285,7 @@ def test_subprocess_backend_terminates_existing_runtime_before_spawn(monkeypatch
 
 
 def test_subprocess_backend_returns_error_when_command_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -473,11 +477,16 @@ def test_resolve_clawteam_executable_prefers_pinned_env(monkeypatch, tmp_path):
     pinned = tmp_path / "custom" / "bin" / "clawteam"
     pinned.parent.mkdir(parents=True)
     pinned.write_text("#!/bin/sh\n")
+    fallback_bin = tmp_path / "fallback" / "clawteam"
+    fallback_bin.parent.mkdir(parents=True)
+    fallback_bin.write_text("#!/bin/sh\n")
+
     monkeypatch.setenv("CLAWTEAM_BIN", str(pinned))
     monkeypatch.setattr(sys, "argv", ["python"])
-    monkeypatch.setattr("clawteam.spawn.cli_env.shutil.which", lambda name: "/usr/bin/clawteam")
+    monkeypatch.setattr("clawteam.spawn.cli_env.shutil.which", lambda name: str(fallback_bin))
 
     assert resolve_clawteam_executable() == str(pinned.resolve())
+    assert build_spawn_path("/usr/bin:/bin").startswith(f"{pinned.parent.resolve()}:")
 
 
 def test_resolve_clawteam_executable_ignores_unrelated_argv0(monkeypatch, tmp_path):
@@ -487,6 +496,7 @@ def test_resolve_clawteam_executable_ignores_unrelated_argv0(monkeypatch, tmp_pa
     resolved_bin.parent.mkdir(parents=True)
     resolved_bin.write_text("#!/bin/sh\n")
 
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
     monkeypatch.setattr(sys, "argv", [str(unrelated)])
     monkeypatch.setattr("clawteam.spawn.cli_env.shutil.which", lambda name: str(resolved_bin))
 

@@ -8,7 +8,11 @@ from clawteam.team.tasks import TaskStore
 
 
 class DummyBackend:
+    def __init__(self):
+        self.calls = []
+
     def spawn(self, **kwargs):
+        self.calls.append(kwargs)
         return f"spawned:{kwargs.get('agent_name')}"
 
     def list_running(self):

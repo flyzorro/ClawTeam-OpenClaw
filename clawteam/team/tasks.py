@@ -537,15 +537,26 @@ class TaskStore:
         return tasks
 
     def clear_unfinished_tasks_for_owner(self, owner: str) -> list[TaskItem]:
-        """Delete unfinished tasks owned by ``owner`` and unfinished dependents.
+        """Delete started unfinished tasks owned by ``owner`` and started unfinished dependents.
 
         This is used when a worker runtime has been replaced and its old task
-        world must not leak into the new runtime. We clear the owner's own
-        unfinished tasks plus any unfinished tasks that still depend on them,
-        so the leader can re-dispatch a clean replacement chain.
+        world must not leak into the new runtime. We clear only tasks that had
+        actually started execution; never-started pending/blocked tasks should
+        remain in the board so the leader/runtime can re-wake them safely.
         """
         if not owner:
             return []
+
+        def _started(task: TaskItem) -> bool:
+            return bool(
+                task.started_at
+                or task.execution_seq
+                or task.active_execution_id
+                or task.active_execution_owner
+                or task.last_terminal_execution_id
+                or task.locked_by
+                or task.status == TaskStatus.in_progress
+            )
 
         with self._write_lock():
             tasks = self._list_tasks_unlocked()
@@ -557,7 +568,7 @@ class TaskStore:
             doomed = {
                 task.id
                 for task in unfinished.values()
-                if task.owner == owner
+                if task.owner == owner and _started(task)
             }
             if not doomed:
                 return []
@@ -568,7 +579,7 @@ class TaskStore:
                 for task in unfinished.values():
                     if task.id in doomed:
                         continue
-                    if any(dep in doomed for dep in task.blocked_by):
+                    if any(dep in doomed for dep in task.blocked_by) and _started(task):
                         doomed.add(task.id)
                         changed = True
 

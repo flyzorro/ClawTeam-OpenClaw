@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import clawteam.worker_runtime as worker_runtime
 from clawteam.spawn.subprocess_backend import SubprocessBackend
@@ -52,6 +53,7 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa 1-id")
     monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "general purpose")
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data dir"))
+    monkeypatch.setattr(worker_runtime, "resolve_clawteam_executable", lambda: "/tmp/custom bin/clawteam")
 
     task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
     prompt = build_worker_task_prompt(
@@ -62,13 +64,16 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     )
 
     expected_bootstrap = (
-        "`eval $(clawteam identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
+        "`eval $(CLAWTEAM_AGENT_NAME='qa 1' CLAWTEAM_AGENT_ID='qa 1-id' "
+        "CLAWTEAM_AGENT_TYPE='general purpose' CLAWTEAM_TEAM_NAME='demo team' "
+        "CLAWTEAM_BIN='/tmp/custom bin/clawteam' "
+        f"CLAWTEAM_DATA_DIR='{tmp_path / 'data dir'}' '/tmp/custom bin/clawteam' identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
         "--agent-type 'general purpose' --team 'demo team' "
         f"--data-dir '{tmp_path / 'data dir'}' --shell)`"
     )
 
     assert expected_bootstrap in prompt
-    assert "clawteam identity set" in prompt
+    assert "'/tmp/custom bin/clawteam' identity set" in prompt
     assert "--shell" in prompt
     assert f"- Active Execution ID: {task.active_execution_id}" not in prompt
     assert "Workflow routing is owned by the leader/template/state machine" in prompt
@@ -918,13 +923,15 @@ def test_clear_replaced_worker_unfinished_tasks_same_instance_id_keeps_tasks(
     assert store.get(task.id).status == TaskStatus.pending
 
 
-def test_clear_replaced_worker_unfinished_tasks_different_instance_id_clears_tasks(
+def test_clear_replaced_worker_unfinished_tasks_different_instance_id_clears_started_tasks(
     monkeypatch,
     tmp_path,
 ):
     _seed_team(tmp_path, monkeypatch)
     store = TaskStore("demo")
     task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
 
     monkeypatch.setattr(
         "clawteam.spawn.registry.get_agent_record",
