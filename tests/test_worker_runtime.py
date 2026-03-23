@@ -53,6 +53,7 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa 1-id")
     monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "general purpose")
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data dir"))
+    monkeypatch.setattr(worker_runtime, "resolve_clawteam_executable", lambda: "/tmp/custom bin/clawteam")
 
     task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
     prompt = build_worker_task_prompt(
@@ -65,13 +66,14 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     expected_bootstrap = (
         "`eval $(CLAWTEAM_AGENT_NAME='qa 1' CLAWTEAM_AGENT_ID='qa 1-id' "
         "CLAWTEAM_AGENT_TYPE='general purpose' CLAWTEAM_TEAM_NAME='demo team' "
-        f"CLAWTEAM_DATA_DIR='{tmp_path / 'data dir'}' clawteam identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
+        "CLAWTEAM_BIN='/tmp/custom bin/clawteam' "
+        f"CLAWTEAM_DATA_DIR='{tmp_path / 'data dir'}' '/tmp/custom bin/clawteam' identity set --agent-name 'qa 1' --agent-id 'qa 1-id' "
         "--agent-type 'general purpose' --team 'demo team' "
         f"--data-dir '{tmp_path / 'data dir'}' --shell)`"
     )
 
     assert expected_bootstrap in prompt
-    assert "clawteam identity set" in prompt
+    assert "'/tmp/custom bin/clawteam' identity set" in prompt
     assert "--shell" in prompt
     assert f"- Active Execution ID: {task.active_execution_id}" not in prompt
     assert "Workflow routing is owned by the leader/template/state machine" in prompt

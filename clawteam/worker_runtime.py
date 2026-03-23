@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from clawteam.delivery.failure_notifier import notify_task_failure
+from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
@@ -68,11 +69,13 @@ def build_worker_task_prompt(
         ])
     if task.description:
         lines.extend(["", "## Description", task.description])
+    clawteam_bin = resolve_clawteam_executable()
     shell_exports = [
         ("CLAWTEAM_AGENT_NAME", agent_name),
         ("CLAWTEAM_AGENT_ID", os.environ.get("CLAWTEAM_AGENT_ID", agent_name)),
         ("CLAWTEAM_AGENT_TYPE", os.environ.get("CLAWTEAM_AGENT_TYPE", "general-purpose")),
         ("CLAWTEAM_TEAM_NAME", team_name),
+        ("CLAWTEAM_BIN", clawteam_bin),
         ("CLAWTEAM_DATA_DIR", os.environ.get("CLAWTEAM_DATA_DIR", "")),
     ]
     if getattr(task, "active_execution_id", ""):
@@ -80,8 +83,9 @@ def build_worker_task_prompt(
     shell_prefix = " ".join(
         f"{key}={shlex.quote(str(value))}" for key, value in shell_exports if str(value)
     )
+    clawteam_cmd = shlex.quote(clawteam_bin)
     bootstrap = (
-        f"eval $({shell_prefix} clawteam identity set "
+        f"eval $({shell_prefix} {clawteam_cmd} identity set "
         f"--agent-name {shlex.quote(agent_name)} "
         f"--agent-id {shlex.quote(os.environ.get('CLAWTEAM_AGENT_ID', agent_name))} "
         f"--agent-type {shlex.quote(os.environ.get('CLAWTEAM_AGENT_TYPE', 'general-purpose'))} "
@@ -99,10 +103,10 @@ def build_worker_task_prompt(
         f"- You are running inside the formal ClawTeam worker runtime for {team_name}.",
         f"- First bootstrap the shell identity for every command block: `{bootstrap}`.",
         f"- Your task lock is already claimed as {agent_name}. Do not claim it again unless you explicitly released it.",
-        f"- Use `clawteam inbox receive {team_name} --ack` to consume wake/context messages when needed.",
-        f"- If blocked, send a concrete blocker to {leader_name} via `clawteam inbox send {team_name} {leader_name} \"<blocker>\"` and update the task to failed with the correct failure metadata.",
+        f"- Use `{clawteam_cmd} inbox receive {team_name} --ack` to consume wake/context messages when needed.",
+        f"- If blocked, send a concrete blocker to {leader_name} via `{clawteam_cmd} inbox send {team_name} {leader_name} \"<blocker>\"` and update the task to failed with the correct failure metadata.",
         "- Workflow routing is owned by the leader/template/state machine. Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges unless the leader explicitly told you to do that.",
-        f"- When the task is truly complete, run `clawteam task update {team_name} {task.id} --status completed`.",
+        f"- When the task is truly complete, run `{clawteam_cmd} task update {team_name} {task.id} --status completed`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",
         "- Use structured result blocks instead of free-form prose.",
