@@ -230,6 +230,29 @@ def test_plan_claim_execution_accepts_pending_task():
     assert decision.case_name == CLAIM_EXECUTION_CASE
 
 
+def test_plan_terminal_writeback_rejects_terminal_update_for_blocked_task():
+    task = TaskItem(
+        id="task-1",
+        subject="setup",
+        status=TaskStatus.blocked,
+        blocked_by=["scope-1"],
+    )
+
+    decision = plan_terminal_writeback(
+        existing=task,
+        event=TerminalWritebackEvent(
+            caller="leader",
+            status=TaskStatus.completed,
+            execution_id=None,
+        ),
+    )
+
+    assert decision is not None
+    assert decision.accepted is False
+    assert decision.case_name == EXECUTION_TERMINAL_CASE
+    assert decision.rejection_reason == "task_still_blocked"
+
+
 def test_plan_terminal_writeback_rejects_stale_execution():
     task = TaskItem(
         id="task-1",

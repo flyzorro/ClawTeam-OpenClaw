@@ -763,6 +763,44 @@ def test_task_release_replacement_cleanup_requires_started_unfinished_work(monke
     assert result.exit_code == 0, result.output
     assert len(backend.calls) == 1
     assert "previous worker runtime was replaced" in backend.calls[0]["prompt"]
-    assert store.get(task.id) is None
+    assert store.get(task.id) is not None
+    assert store.get(task.id).status == TaskStatus.pending
     assert store.get(downstream.id) is not None
     assert store.get(downstream.id).status == TaskStatus.blocked
+
+
+def test_task_release_reopened_pending_task_does_not_trigger_replacement_cleanup(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Implement fix", description="real work", owner="dev1")
+    with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+        store.update(task.id, status=TaskStatus.in_progress, caller="dev1")
+    store.update(task.id, status=TaskStatus.completed, caller="dev1")
+    store.reopen_task(task.id, caller="leader")
+
+    workspace = tmp_path / "dev1-worktree"
+    workspace.mkdir()
+    _write_workspace_registry("demo", "dev1", workspace, tmp_path)
+
+    backend = RecordingBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.registry.get_agent_runtime_state", lambda *args, **kwargs: "stale")
+    monkeypatch.setattr("clawteam.spawn.registry.terminate_agent", lambda *args, **kwargs: True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["task", "release", "demo", task.id, "--message", "Resume reopened task"],
+        env=env,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(backend.calls) == 1
+    assert store.get(task.id) is not None
+    assert store.get(task.id).status == TaskStatus.pending
+    assert "Replacement cleanup" not in result.output
