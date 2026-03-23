@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from clawteam.team.models import TaskItem, TaskStatus
+
+
+@dataclass(frozen=True)
+class ReplacementDecision:
+    owner: str
+    replacement_required: bool
+    replaced_execution_id: str | None
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -34,21 +42,23 @@ class RuntimeOrchestrator:
 
         state_before = get_agent_runtime_state(self.team, task.owner)
         alive_before = True if state_before == "alive" else (None if state_before == "missing" else False)
+        replacement = plan_replacement(
+            store=TaskStore(self.team),
+            task=task,
+            state_before=state_before,
+            respawn=respawn,
+        )
         respawned = False
         terminated_stale = False
         spawn_info = None
-        replacement_required = False
         cleared_tasks: list[TaskItem] = []
 
-        if respawn and state_before in {"dead", "stale"}:
-            store = TaskStore(self.team)
+        if replacement.reason in {"dead", "stale"}:
             member = TeamManager.get_member(self.team, task.owner)
             if member is None:
                 raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
-            started_unfinished_tasks = _started_unfinished_tasks_for_owner(store, task.owner)
-            replacement_required = bool(started_unfinished_tasks)
-            if replacement_required:
-                cleared_tasks = store.clear_unfinished_tasks_for_owner(task.owner)
+            if replacement.replacement_required:
+                cleared_tasks = TaskStore(self.team).clear_unfinished_tasks_for_owner(task.owner)
             if state_before == "stale":
                 terminated_stale = terminate_agent(self.team, task.owner)
             spawn_info = _spawn_existing_agent(
@@ -61,7 +71,7 @@ class RuntimeOrchestrator:
                     + (
                         "All unfinished tasks previously assigned to you were cleared. "
                         "Do not resume old work. Wait for the leader to dispatch fresh tasks."
-                        if replacement_required
+                        if replacement.replacement_required
                         else "No claimed unfinished task was preserved from the old runtime. Wait for or consume the fresh wake for your current task."
                     )
                 ),
@@ -71,7 +81,7 @@ class RuntimeOrchestrator:
             respawned = True
 
         notifier_result = None
-        if not replacement_required:
+        if not replacement.replacement_required:
             if respawn and state_before == "missing":
                 member = TeamManager.get_member(self.team, task.owner)
                 if member is None:
@@ -91,18 +101,59 @@ class RuntimeOrchestrator:
             notifier_result = notifier(self.team, task, caller, release_message)
 
         return {
-            "messageSent": not replacement_required,
+            "messageSent": not replacement.replacement_required,
             "message": release_message,
             "ownerAliveBefore": alive_before,
             "ownerRuntimeStateBefore": state_before,
             "terminatedStale": terminated_stale,
             "respawned": respawned,
             "spawn": spawn_info or {},
-            "replacementRequired": replacement_required,
+            "replacementRequired": replacement.replacement_required,
+            "replacementReason": replacement.reason,
+            "replacedExecutionId": replacement.replaced_execution_id,
+            "replacement": asdict(replacement),
             "clearedTaskIds": [item.id for item in cleared_tasks],
             "clearedTaskSubjects": [item.subject for item in cleared_tasks],
             **(notifier_result or {}),
         }
+
+
+def plan_replacement(*, store, task: TaskItem, state_before: str | None, respawn: bool) -> ReplacementDecision:
+    if not respawn:
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=False,
+            replaced_execution_id=None,
+            reason="respawn_disabled",
+        )
+    if state_before in {"dead", "stale"}:
+        started_unfinished_tasks = _started_unfinished_tasks_for_owner(store, task.owner)
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=bool(started_unfinished_tasks),
+            replaced_execution_id=task.active_execution_id if started_unfinished_tasks else None,
+            reason=state_before,
+        )
+    if state_before == "missing":
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=False,
+            replaced_execution_id=None,
+            reason="missing",
+        )
+    if state_before == "alive":
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=False,
+            replaced_execution_id=None,
+            reason="alive",
+        )
+    return ReplacementDecision(
+        owner=task.owner or "",
+        replacement_required=False,
+        replaced_execution_id=None,
+        reason="unknown",
+    )
 
 
 def _task_has_started_execution(task: TaskItem) -> bool:
