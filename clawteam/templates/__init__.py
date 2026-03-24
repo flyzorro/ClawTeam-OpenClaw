@@ -78,9 +78,14 @@ class LaunchTaskInput(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
 
 
+class LaunchExecutionResult(BaseModel):
+    created_task_ids: dict[str, str] = Field(default_factory=dict)
+
+
 NormalizedLaunchBrief.model_rebuild()
 PreparedTaskLaunchBrief.model_rebuild()
 LaunchTaskInput.model_rebuild()
+LaunchExecutionResult.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +281,35 @@ def build_launch_task_input(
         blocked_by=[created_task_ids[name] for name in task_def.blocked_by],
         metadata=metadata,
     )
+
+
+def execute_template_launch(
+    task_store,
+    tasks: list[TaskDef],
+    *,
+    goal: str,
+    team_name: str,
+) -> LaunchExecutionResult:
+    """Execute authored-order template task creation behind one launch boundary."""
+    created_task_ids: dict[str, str] = {}
+
+    for task_def in tasks:
+        launch_task_input = build_launch_task_input(
+            task_def,
+            goal=goal,
+            team_name=team_name,
+            created_task_ids=created_task_ids,
+        )
+        task = task_store.create(
+            subject=launch_task_input.subject,
+            description=launch_task_input.description,
+            owner=launch_task_input.owner,
+            blocked_by=launch_task_input.blocked_by,
+            metadata=launch_task_input.metadata,
+        )
+        created_task_ids[task_def.subject] = task.id
+
+    return LaunchExecutionResult(created_task_ids=created_task_ids)
 
 
 # ---------------------------------------------------------------------------

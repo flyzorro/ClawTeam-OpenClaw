@@ -18,7 +18,7 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.delivery.release_notifier import notify_task_release
-from clawteam.templates import build_launch_task_input, render_task
+from clawteam.templates import execute_template_launch, render_task
 from clawteam.services import (
     RuntimeOrchestrator,
     TaskReleaseContext,
@@ -2578,27 +2578,18 @@ def launch_team(
 
     # 5. Create tasks
     ts = TaskStore(t_name)
-    created_task_ids: dict[str, str] = {}
-    for task_def in tmpl.tasks:
-        try:
-            launch_task_input = build_launch_task_input(
-                task_def,
-                goal=goal,
-                team_name=t_name,
-                created_task_ids=created_task_ids,
-            )
-        except ValueError as e:
-            console.print(f"[red]{e}[/red]")
-            raise typer.Exit(1)
-
-        task = ts.create(
-            subject=launch_task_input.subject,
-            description=launch_task_input.description,
-            owner=launch_task_input.owner,
-            blocked_by=launch_task_input.blocked_by,
-            metadata=launch_task_input.metadata,
+    try:
+        launch_result = execute_template_launch(
+            ts,
+            tmpl.tasks,
+            goal=goal,
+            team_name=t_name,
         )
-        created_task_ids[task_def.subject] = task.id
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    created_task_ids = launch_result.created_task_ids
 
     # 6. Get backend
     try:

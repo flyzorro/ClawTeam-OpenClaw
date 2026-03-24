@@ -5,6 +5,7 @@ import pytest
 from clawteam.templates import (
     AgentDef,
     LaunchBriefSections,
+    LaunchExecutionResult,
     LaunchTaskInput,
     NormalizedLaunchBrief,
     PreparedTaskLaunchBrief,
@@ -12,6 +13,7 @@ from clawteam.templates import (
     TemplateDef,
     _SafeDict,
     build_launch_task_input,
+    execute_template_launch,
     list_templates,
     load_template,
     normalize_launch_brief,
@@ -43,6 +45,29 @@ class TestRenderTask:
     def test_multiple_same_variable(self):
         result = render_task("{x} and {x}", x="foo")
         assert result == "foo and foo"
+
+
+class _FakeCreatedTask:
+    def __init__(self, task_id: str):
+        self.id = task_id
+
+
+class _FakeTaskStore:
+    def __init__(self):
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, *, subject: str, description: str, owner: str, blocked_by: list[str], metadata: dict[str, object]):
+        task_id = f"task-{len(self.calls) + 1}"
+        call = {
+            "subject": subject,
+            "description": description,
+            "owner": owner,
+            "blocked_by": blocked_by,
+            "metadata": metadata,
+            "id": task_id,
+        }
+        self.calls.append(call)
+        return _FakeCreatedTask(task_id)
 
 
 class TestLaunchBrief:
@@ -249,6 +274,61 @@ Deliver the smallest safe change.
                 team_name="delivery-demo",
                 created_task_ids={},
             )
+
+    def test_execute_template_launch_creates_tasks_in_authored_order_and_backfills_ids(self):
+        store = _FakeTaskStore()
+
+        result = execute_template_launch(
+            store,
+            [
+                TaskDef(
+                    subject="Scope",
+                    description="Clarify {goal}.",
+                    owner="lead",
+                ),
+                TaskDef(
+                    subject="Implement",
+                    description="Build the change.",
+                    owner="dev1",
+                    blocked_by=["Scope"],
+                    on_fail=["Scope"],
+                ),
+            ],
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+        )
+
+        assert result == LaunchExecutionResult(
+            created_task_ids={
+                "Scope": "task-1",
+                "Implement": "task-2",
+            }
+        )
+        assert [call["subject"] for call in store.calls] == ["Scope", "Implement"]
+        assert store.calls[1]["blocked_by"] == ["task-1"]
+        assert store.calls[1]["metadata"]["on_fail"] == ["task-1"]
+        assert store.calls[1]["metadata"]["launch_brief"]["format"] == "prose_fallback"
+        assert "## Interpretation Rules" in store.calls[1]["description"]
+
+    def test_execute_template_launch_surfaces_reference_error_without_partial_hidden_logic(self):
+        store = _FakeTaskStore()
+
+        with pytest.raises(ValueError, match="blocked_by tasks: MissingScope"):
+            execute_template_launch(
+                store,
+                [
+                    TaskDef(
+                        subject="Implement",
+                        description="Build the change.",
+                        owner="dev1",
+                        blocked_by=["MissingScope"],
+                    )
+                ],
+                goal="Ship the feature safely",
+                team_name="delivery-demo",
+            )
+
+        assert store.calls == []
 
     def test_render_task_brief_wraps_old_prose_into_sections(self):
         rendered = render_task_brief(
