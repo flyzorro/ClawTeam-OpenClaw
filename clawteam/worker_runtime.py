@@ -14,7 +14,6 @@ from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
-    plan_runtime_terminal_writeback,
 )
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
@@ -328,53 +327,6 @@ def _wait_for_post_exit_settle(
         time.sleep(max(poll_interval_seconds, 0.05))
 
 
-def _apply_runtime_terminal_writeback(
-    *,
-    store: TaskStore,
-    task_id: str,
-    caller: str,
-    status: TaskStatus,
-    execution_id: str | None,
-    metadata: dict[str, Any] | None = None,
-    fallback_case_name: str = "worker_runtime_failed_closed",
-) -> tuple[TaskTransitionDecision | None, Any | None, Any | None]:
-    existing = store.get(task_id)
-    task = None
-    apply_result = None
-    if existing is None:
-        return None, task, apply_result
-
-    decision = plan_runtime_terminal_writeback(
-        existing=existing,
-        caller=caller,
-        status=status,
-        execution_id=execution_id,
-    )
-    if decision and not decision.accepted:
-        rejection = store.record_transition_rejection(
-            task_id,
-            case_name=decision.case_name,
-            caller=caller,
-            execution_id=execution_id,
-            rejection_reason=decision.rejection_reason,
-        )
-        task = rejection.task if rejection is not None else store.get(task_id)
-        return decision, task, apply_result
-
-    applied_case = fallback_case_name
-    if decision and decision.accepted:
-        applied_case = decision.case_name
-    apply_result = store.accept_terminal_writeback(
-        task_id,
-        status=status,
-        caller=caller,
-        execution_id=execution_id,
-        metadata=metadata,
-        case_name=applied_case,
-    )
-    return decision, task, apply_result
-
-
 def _fail_claimed_task(
     *,
     team_name: str,
@@ -399,11 +351,10 @@ def _fail_claimed_task(
         failure_metadata["session_key"] = session_key
     if stall_phase:
         failure_metadata["stall_phase"] = stall_phase
-    decision, task, apply_result = _apply_runtime_terminal_writeback(
-        store=store,
-        task_id=task_id,
-        caller=agent_name,
+    decision, task, apply_result = store.apply_runtime_terminal_writeback(
+        task_id,
         status=TaskStatus.failed,
+        caller=agent_name,
         execution_id=execution_id,
         metadata=failure_metadata,
         fallback_case_name="worker_runtime_failed_closed",

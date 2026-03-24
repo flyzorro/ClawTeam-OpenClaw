@@ -445,6 +445,51 @@ def test_task_store_claim_execution_rejects_in_progress_snapshot_under_lock(monk
 
 
 
+def test_task_store_runtime_terminal_writeback_rejects_missing_execution_id(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    store = TaskStore("demo")
+    task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    store.claim_execution(task.id, caller="qa1")
+
+    decision, rejected_task, apply_result = store.apply_runtime_terminal_writeback(
+        task.id,
+        status=TaskStatus.completed,
+        caller="qa1",
+        execution_id=None,
+    )
+
+    assert apply_result is None
+    assert decision is not None
+    assert decision.accepted is False
+    assert decision.rejection_reason == "missing_execution_id"
+    assert rejected_task is not None
+    assert rejected_task.status == TaskStatus.in_progress
+    assert rejected_task.metadata["transition_log"][-1]["rejectionReason"] == "missing_execution_id"
+
+
+
+def test_task_store_runtime_terminal_writeback_accepts_matching_execution(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    store = TaskStore("demo")
+    task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    claimed = store.claim_execution(task.id, caller="qa1")
+
+    decision, rejected_task, apply_result = store.apply_runtime_terminal_writeback(
+        task.id,
+        status=TaskStatus.completed,
+        caller="qa1",
+        execution_id=claimed.task.active_execution_id,
+    )
+
+    assert rejected_task is None
+    assert decision is not None
+    assert decision.accepted is True
+    assert apply_result is not None
+    assert apply_result.case_name == "execution_scoped_terminal_writeback"
+    assert apply_result.task.status == TaskStatus.completed
+
+
+
 def test_task_store_rejects_duplicate_same_status_terminal_writeback(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     store = TaskStore("demo")

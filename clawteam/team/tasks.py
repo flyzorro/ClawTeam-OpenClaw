@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from clawteam.task.transition import TaskTransitionDecision, plan_runtime_terminal_writeback
 from clawteam.team.models import TaskItem, TaskStatus, get_data_dir
 
 
@@ -327,6 +328,56 @@ class TaskStore:
             metadata_keys_to_remove=metadata_keys_to_remove,
             force=force,
         )
+
+    def apply_runtime_terminal_writeback(
+        self,
+        task_id: str,
+        *,
+        status: TaskStatus,
+        caller: str,
+        execution_id: str | None,
+        metadata: dict[str, Any] | None = None,
+        metadata_keys_to_remove: list[str] | None = None,
+        force: bool = False,
+        fallback_case_name: str = "worker_runtime_failed_closed",
+    ) -> tuple[TaskTransitionDecision | None, TaskItem | None, TransitionApplyResult | None]:
+        existing = self.get(task_id)
+        task = None
+        apply_result = None
+        if existing is None:
+            return None, task, apply_result
+
+        decision = plan_runtime_terminal_writeback(
+            existing=existing,
+            caller=caller,
+            status=status,
+            execution_id=execution_id,
+        )
+        if decision and not decision.accepted:
+            rejection = self.record_transition_rejection(
+                task_id,
+                case_name=decision.case_name,
+                caller=caller,
+                execution_id=execution_id,
+                rejection_reason=decision.rejection_reason,
+            )
+            task = rejection.task if rejection is not None else self.get(task_id)
+            return decision, task, apply_result
+
+        applied_case = fallback_case_name
+        if decision and decision.accepted:
+            applied_case = decision.case_name
+        apply_result = self.accept_terminal_writeback(
+            task_id,
+            status=status,
+            caller=caller,
+            execution_id=execution_id,
+            metadata=metadata,
+            metadata_keys_to_remove=metadata_keys_to_remove,
+            force=force,
+            case_name=applied_case,
+        )
+        return decision, task, apply_result
 
     def reopen_task(self, task_id: str, *, caller: str, force: bool = False) -> TransitionApplyResult | None:
         return self.apply_transition_decision(
