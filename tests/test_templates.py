@@ -6,7 +6,9 @@ from clawteam.templates import (
     AgentDef,
     LaunchBriefSections,
     LaunchExecutionResult,
+    LaunchReferenceError,
     LaunchTaskInput,
+    LaunchTemplateError,
     NormalizedLaunchBrief,
     PreparedTaskLaunchBrief,
     TaskDef,
@@ -248,7 +250,7 @@ Deliver the smallest safe change.
         assert "## Brief Format\nprose_fallback" in task_input.description
 
     def test_build_launch_task_input_rejects_unknown_blocked_by_reference(self):
-        with pytest.raises(ValueError, match="blocked_by tasks: MissingScope"):
+        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope"):
             build_launch_task_input(
                 TaskDef(
                     subject="Implement",
@@ -262,7 +264,7 @@ Deliver the smallest safe change.
             )
 
     def test_build_launch_task_input_rejects_unknown_on_fail_reference(self):
-        with pytest.raises(ValueError, match="on_fail tasks: MissingImplement"):
+        with pytest.raises(LaunchReferenceError, match="on_fail tasks: MissingImplement"):
             build_launch_task_input(
                 TaskDef(
                     subject="QA",
@@ -313,7 +315,9 @@ Deliver the smallest safe change.
     def test_execute_template_launch_surfaces_reference_error_without_partial_hidden_logic(self):
         store = _FakeTaskStore()
 
-        with pytest.raises(ValueError, match="blocked_by tasks: MissingScope"):
+        assert issubclass(LaunchReferenceError, LaunchTemplateError)
+
+        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope"):
             execute_template_launch(
                 store,
                 [
