@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from clawteam.team.models import TaskItem, TaskStatus
 from clawteam.workflow.topology import WorkflowTopology
@@ -25,6 +25,7 @@ class TaskTransitionValidationError(ValueError):
 WATCHDOG_FAILURE_ROOT_CAUSE = "worker agent turn stalled without terminal task update"
 WATCHDOG_RECOVERY_CASE = "recover_watchdog_failed_completion"
 EXECUTION_TERMINAL_CASE = "execution_scoped_terminal_writeback"
+TerminalWritebackCallerPath = Literal["worker_runtime", "manual", "legacy"]
 CLAIM_EXECUTION_CASE = "claim_execution"
 REOPEN_TASK_CASE = "reopen_task"
 DUPLICATE_TERMINAL_SAME_STATUS = "duplicate_terminal_same_status"
@@ -64,6 +65,7 @@ class TerminalWritebackEvent:
     caller: str
     status: TaskStatus
     execution_id: str | None = None
+    caller_path: TerminalWritebackCallerPath = "legacy"
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,7 @@ def plan_execution_scoped_terminal_writeback(
     caller: str,
     requested_status: TaskStatus | None,
     execution_id: str | None,
+    caller_path: TerminalWritebackCallerPath = "legacy",
 ) -> TaskTransitionDecision | None:
     if requested_status not in (TaskStatus.completed, TaskStatus.failed):
         return None
@@ -223,7 +226,7 @@ def plan_execution_scoped_terminal_writeback(
             rejection_reason="task_still_blocked",
         )
     if not execution_id:
-        if existing.active_execution_id and existing.active_execution_owner == caller:
+        if caller_path == "worker_runtime":
             return TaskTransitionDecision(
                 accepted=False,
                 case_name=EXECUTION_TERMINAL_CASE,
@@ -275,6 +278,7 @@ def plan_terminal_writeback(
         caller=event.caller,
         requested_status=event.status,
         execution_id=event.execution_id,
+        caller_path=event.caller_path,
     )
 
 
