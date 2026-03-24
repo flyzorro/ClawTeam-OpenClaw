@@ -10,6 +10,15 @@ class LaunchTemplateError(ValueError):
 class LaunchReferenceError(LaunchTemplateError):
     """Raised when a template references a task that is not launchable yet."""
 
+    def __init__(self, *, task_subject: str, reference_kind: str, missing_refs: list[str]):
+        self.task_subject = task_subject
+        self.reference_kind = reference_kind
+        self.missing_refs = missing_refs
+        super().__init__(
+            f"Template task '{task_subject}' references unknown or not-yet-created "
+            f"{reference_kind} tasks: {', '.join(missing_refs)}"
+        )
+
 
 class LaunchTaskBuildError(LaunchTemplateError):
     """Raised when launch task input construction fails."""
@@ -195,13 +204,17 @@ def build_launch_task_input(
     missing_dependencies = [name for name in task_def.blocked_by if name not in created_task_ids]
     if missing_dependencies:
         raise LaunchReferenceError(
-            f"Template task '{task_def.subject}' references unknown or not-yet-created blocked_by tasks: {', '.join(missing_dependencies)}"
+            task_subject=task_def.subject,
+            reference_kind="blocked_by",
+            missing_refs=missing_dependencies,
         )
 
     missing_fail_targets = [name for name in task_def.on_fail if name not in created_task_ids]
     if missing_fail_targets:
         raise LaunchReferenceError(
-            f"Template task '{task_def.subject}' references unknown or not-yet-created on_fail tasks: {', '.join(missing_fail_targets)}"
+            task_subject=task_def.subject,
+            reference_kind="on_fail",
+            missing_refs=missing_fail_targets,
         )
 
     metadata: dict[str, object] = {}
