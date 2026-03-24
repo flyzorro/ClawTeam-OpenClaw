@@ -18,7 +18,7 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.delivery.release_notifier import notify_task_release
-from clawteam.templates import render_task, render_task_brief
+from clawteam.templates import normalize_launch_brief, render_task, render_task_brief
 from clawteam.services import (
     RuntimeOrchestrator,
     TaskReleaseContext,
@@ -2598,12 +2598,23 @@ def launch_team(
         if task_def.on_fail:
             metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
 
+        rendered_task_template = render_task(
+            task_def.description,
+            goal=goal,
+            team_name=t_name,
+            agent_name=task_def.owner,
+        )
+        normalized_brief = normalize_launch_brief(
+            source_request=goal,
+            leader_brief=rendered_task_template,
+        )
         rendered_description = render_task_brief(
             task_def.description,
             goal=goal,
             team_name=t_name,
             agent_name=task_def.owner,
         )
+        metadata["launch_brief"] = normalized_brief.model_dump(mode="json")
 
         task = ts.create(
             subject=task_def.subject,
