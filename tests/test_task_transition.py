@@ -253,6 +253,54 @@ def test_plan_terminal_writeback_rejects_terminal_update_for_blocked_task():
     assert decision.rejection_reason == "task_still_blocked"
 
 
+def test_plan_terminal_writeback_rejects_missing_execution_id_for_runtime_path():
+    task = TaskItem(
+        id="task-1",
+        subject="impl",
+        status=TaskStatus.in_progress,
+        active_execution_id="task-1-exec-2",
+        active_execution_owner="dev1",
+    )
+
+    decision = plan_terminal_writeback(
+        existing=task,
+        event=TerminalWritebackEvent(
+            caller="dev1",
+            status=TaskStatus.completed,
+            execution_id=None,
+            runtime_path=True,
+        ),
+    )
+
+    assert decision is not None
+    assert decision.accepted is False
+    assert decision.case_name == EXECUTION_TERMINAL_CASE
+    assert decision.rejection_reason == "missing_execution_id"
+
+
+
+def test_plan_terminal_writeback_allows_missing_execution_id_for_manual_path_on_claimed_task():
+    task = TaskItem(
+        id="task-1",
+        subject="impl",
+        status=TaskStatus.in_progress,
+        active_execution_id="task-1-exec-2",
+        active_execution_owner="dev1",
+    )
+
+    decision = plan_terminal_writeback(
+        existing=task,
+        event=TerminalWritebackEvent(
+            caller="dev1",
+            status=TaskStatus.completed,
+            execution_id=None,
+        ),
+    )
+
+    assert decision is None
+
+
+
 def test_plan_terminal_writeback_rejects_stale_execution():
     task = TaskItem(
         id="task-1",
