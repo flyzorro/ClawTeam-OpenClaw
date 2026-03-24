@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -104,6 +106,8 @@ def build_worker_task_prompt(
         f"- Use `{clawteam_cmd} inbox receive {team_name} --ack` to consume wake/context messages when needed.",
         f"- If blocked, send a concrete blocker to {leader_name} via `{clawteam_cmd} inbox send {team_name} {leader_name} \"<blocker>\"` and update the task to failed with the correct failure metadata.",
         "- Workflow routing is owned by the leader/template/state machine. Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges unless the leader explicitly told you to do that.",
+        f"- Before terminal completion, write the machine completion envelope to `$CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH` with task_id/execution_id/result_type/result_value so runtime has a structured completion signal.",
+        f"- Example completion envelope command: `python - <<'PY'\nimport json, os\nfrom pathlib import Path\nPath(os.environ['CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH']).write_text(json.dumps({{'task_id': '{task.id}', 'execution_id': '{getattr(task, 'active_execution_id', '')}', 'result_type': 'DEV_RESULT', 'result_value': 'completed'}}) + '\\n', encoding='utf-8')\nPY`",
         f"- When the task is truly complete, run `{clawteam_cmd} task update {team_name} {task.id} --status completed`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",
@@ -210,6 +214,10 @@ def _session_transcript_path(session_key: str) -> Path:
     return Path.home() / ".openclaw" / "agents" / "main" / "sessions" / f"{session_key}.jsonl"
 
 
+def _completion_signal_path(session_key: str) -> Path:
+    return Path.home() / ".openclaw" / "agents" / "main" / "sessions" / f"{session_key}.completion.json"
+
+
 def _read_transcript_tail(session_key: str, max_lines: int = 20) -> str:
     path = _session_transcript_path(session_key)
     if not path.exists():
@@ -235,6 +243,128 @@ def _transcript_progress_marker(session_key: str) -> tuple[int, int]:
         return (int(stat.st_mtime_ns), int(stat.st_size))
     except OSError:
         return (0, 0)
+
+
+def _read_completion_signal(session_key: str) -> dict[str, Any] | None:
+    path = _completion_signal_path(session_key)
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _extract_text_from_transcript_line(line: str) -> str:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return line
+
+    parts: list[str] = []
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, str):
+            if value:
+                parts.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk(item)
+            return
+        if isinstance(value, dict):
+            content = value.get("content")
+            if isinstance(content, str):
+                if content:
+                    parts.append(content)
+            elif isinstance(content, list):
+                _walk(content)
+            text = value.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+            message = value.get("message")
+            if message is not None:
+                _walk(message)
+
+    _walk(payload)
+    return "\n".join(part for part in parts if part).strip() or line
+
+
+_RESULT_BLOCK_PATTERNS: list[tuple[str, re.Pattern[str], dict[str, TaskStatus]]] = [
+    (
+        "DEV_RESULT",
+        re.compile(
+            r"DEV_RESULT\s+status:\s*(?P<status>completed|blocked)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"completed": TaskStatus.completed, "blocked": TaskStatus.failed},
+    ),
+    (
+        "QA_RESULT",
+        re.compile(
+            r"QA_RESULT\s+status:\s*(?P<status>pass|fail|blocked)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"pass": TaskStatus.completed, "fail": TaskStatus.failed, "blocked": TaskStatus.failed},
+    ),
+    (
+        "REVIEW_RESULT",
+        re.compile(
+            r"REVIEW_RESULT\s+decision:\s*(?P<status>approve|return_to_implement)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"approve": TaskStatus.completed, "return_to_implement": TaskStatus.failed},
+    ),
+]
+
+
+def _infer_terminal_status_from_transcript_tail(transcript_tail: str) -> tuple[TaskStatus, str, str] | None:
+    normalized = "\n".join(
+        part for part in (_extract_text_from_transcript_line(line) for line in transcript_tail.splitlines()) if part
+    )
+    for block_name, pattern, status_map in _RESULT_BLOCK_PATTERNS:
+        match = pattern.search(normalized)
+        if not match:
+            continue
+        raw_status = str(match.group("status") or "").strip().lower()
+        inferred = status_map.get(raw_status)
+        if inferred is None:
+            continue
+        return inferred, block_name, raw_status
+    return None
+
+
+def _infer_terminal_status_from_completion_signal(
+    signal: dict[str, Any] | None,
+    *,
+    task_id: str,
+    execution_id: str,
+) -> tuple[TaskStatus, str, str] | None:
+    if not signal:
+        return None
+    if str(signal.get("task_id") or "").strip() != task_id:
+        return None
+    if str(signal.get("execution_id") or "").strip() != execution_id:
+        return None
+    result_type = str(signal.get("result_type") or "").strip()
+    result_value = str(signal.get("result_value") or signal.get("result_status") or "").strip().lower()
+    if not result_type or not result_value:
+        return None
+    for block_name, _pattern, status_map in _RESULT_BLOCK_PATTERNS:
+        if block_name != result_type:
+            continue
+        inferred = status_map.get(result_value)
+        if inferred is None:
+            return None
+        return inferred, result_type, result_value
+    return None
 
 
 def _run_agent_with_progress_watchdog(
@@ -504,6 +634,7 @@ def run_worker_iteration(
     env["CLAWTEAM_TASK_ID"] = claimed.id
     env["CLAWTEAM_TASK_EXECUTION_ID"] = claimed.active_execution_id
     env["CLAWTEAM_TASK_EXECUTION_SEQ"] = str(claimed.execution_seq)
+    env["CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH"] = str(_completion_signal_path(session_key))
     progress_stall_timeout_seconds = float(
         env.get("CLAWTEAM_WORKER_PROGRESS_STALL_TIMEOUT", DEFAULT_PROGRESS_STALL_TIMEOUT)
     )
@@ -596,7 +727,66 @@ def run_worker_iteration(
             and refreshed.status == TaskStatus.in_progress
             and refreshed.locked_by == agent_name
         ):
-            transcript_tail = _read_transcript_tail(session_key)
+            signal_payload = _read_completion_signal(session_key)
+            inferred_terminal = _infer_terminal_status_from_completion_signal(
+                signal_payload,
+                task_id=claimed.id,
+                execution_id=claimed.active_execution_id,
+            )
+            recovery_source = "completion_signal"
+            fallback_mode = False
+            if inferred_terminal is None:
+                # Compatibility fallback only: transcript parsing is evidence/debugging-oriented and
+                # should not become the long-term completion authority once machine signals are ubiquitous.
+                transcript_tail = _read_transcript_tail(session_key)
+                inferred_terminal = _infer_terminal_status_from_transcript_tail(transcript_tail)
+                recovery_source = "transcript_result_block"
+                fallback_mode = inferred_terminal is not None
+            else:
+                transcript_tail = _read_transcript_tail(session_key)
+
+            if inferred_terminal is not None:
+                inferred_status, result_block, result_value = inferred_terminal
+                recovery_metadata = {
+                    "runtime_terminal_recovery": recovery_source,
+                    "runtime_terminal_recovery_result_block": result_block,
+                    "runtime_terminal_recovery_result_value": result_value,
+                    "runtime_terminal_recovery_session_key": session_key,
+                    "runtime_terminal_recovery_at": _now_iso(),
+                }
+                if signal_payload is not None and recovery_source == "completion_signal":
+                    recovery_metadata["runtime_terminal_recovery_signal_version"] = str(signal_payload.get("version") or "1")
+                if fallback_mode:
+                    recovery_metadata["runtime_terminal_recovery_compatibility_fallback"] = "true"
+                recovered_decision, recovered_task, recovered_apply = store.apply_runtime_terminal_writeback(
+                    claimed.id,
+                    status=inferred_status,
+                    caller=agent_name,
+                    execution_id=claimed.active_execution_id,
+                    metadata=recovery_metadata,
+                    fallback_case_name="worker_runtime_transcript_terminal_recovery",
+                )
+                if recovered_decision is None or recovered_decision.accepted:
+                    terminal_task = recovered_apply.task if recovered_apply is not None else recovered_task
+                    return {
+                        "status": "recovered_terminal",
+                        "messages": message_count,
+                        "acked": acked_count,
+                        "taskId": claimed.id,
+                        "executionId": claimed.active_execution_id,
+                        "executionSeq": claimed.execution_seq,
+                        "claimCase": claim_result.case_name,
+                        "returncode": result.returncode,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "command": command,
+                        "sessionKey": session_key,
+                        "recoveredStatus": inferred_status.value,
+                        "recoveredFrom": result_block,
+                        "recoverySource": recovery_source,
+                        "taskStatus": terminal_task.status.value if terminal_task is not None else inferred_status.value,
+                    }
+
             evidence_parts = [
                 "openclaw agent returned success but task remained in_progress and locked to the same worker",
                 f"session_key={session_key}",
