@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,22 @@ DEFAULT_PROGRESS_POLL_INTERVAL = 1.0
 DEFAULT_POST_EXIT_SETTLE_TIMEOUT = 15.0
 DEFAULT_POST_EXIT_POLL_INTERVAL = 1.0
 DEFAULT_POST_EXIT_PROGRESS_GRACE = 3.0
+
+COMPLETION_ENVELOPE_VERSION = 1
+COMPLETION_SIGNAL_PRIMARY_SOURCE = "runtime_completion_envelope"
+COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE = "transcript_result_block_temporary_compatibility"
+_COMPLETION_ENVELOPE_ALLOWED_TERMINAL_STATUS = frozenset({"completed", "failed"})
+
+
+@dataclass(frozen=True)
+class RuntimeCompletionEnvelope:
+    version: int
+    task_id: str
+    execution_id: str
+    terminal_status: str
+    result_type: str = ""
+    result_payload: Any | None = None
+    emitted_at: str = ""
 
 
 def load_startup_prompt(path: str | None) -> str:
@@ -106,8 +123,8 @@ def build_worker_task_prompt(
         f"- Use `{clawteam_cmd} inbox receive {team_name} --ack` to consume wake/context messages when needed.",
         f"- If blocked, send a concrete blocker to {leader_name} via `{clawteam_cmd} inbox send {team_name} {leader_name} \"<blocker>\"` and update the task to failed with the correct failure metadata.",
         "- Workflow routing is owned by the leader/template/state machine. Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges unless the leader explicitly told you to do that.",
-        f"- Before terminal completion, write the machine completion envelope to `$CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH` with task_id/execution_id/result_type/result_value so runtime has a structured completion signal.",
-        f"- Example completion envelope command: `python - <<'PY'\nimport json, os\nfrom pathlib import Path\nPath(os.environ['CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH']).write_text(json.dumps({{'task_id': '{task.id}', 'execution_id': '{getattr(task, 'active_execution_id', '')}', 'result_type': 'DEV_RESULT', 'result_value': 'completed'}}) + '\\n', encoding='utf-8')\nPY`",
+        f"- Before terminal completion, write the machine completion envelope to `$CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH` with task_id/execution_id/terminal_status. result_type and result_payload are optional business fields, not runtime authority.",
+        f"- Example completion envelope command: `python - <<'PY'\nimport json, os\nfrom pathlib import Path\nPath(os.environ['CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH']).write_text(json.dumps({{'version': 1, 'task_id': '{task.id}', 'execution_id': '{getattr(task, 'active_execution_id', '')}', 'terminal_status': 'completed', 'result_type': 'DEV_RESULT', 'result_payload': {{'status': 'completed'}}}}) + '\\n', encoding='utf-8')\nPY`",
         f"- When the task is truly complete, run `{clawteam_cmd} task update {team_name} {task.id} --status completed`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",
@@ -245,7 +262,35 @@ def _transcript_progress_marker(session_key: str) -> tuple[int, int]:
         return (0, 0)
 
 
-def _read_completion_signal(session_key: str) -> dict[str, Any] | None:
+def _parse_runtime_completion_envelope(payload: dict[str, Any] | None) -> RuntimeCompletionEnvelope | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        version = int(payload.get("version", COMPLETION_ENVELOPE_VERSION))
+    except (TypeError, ValueError):
+        return None
+    task_id = str(payload.get("task_id") or "").strip()
+    execution_id = str(payload.get("execution_id") or "").strip()
+    terminal_status = str(payload.get("terminal_status") or "").strip().lower()
+    result_type = str(payload.get("result_type") or "").strip()
+    result_payload = payload.get("result_payload")
+    emitted_at = str(payload.get("emitted_at") or "").strip()
+    if version != COMPLETION_ENVELOPE_VERSION:
+        return None
+    if not task_id or not execution_id or terminal_status not in _COMPLETION_ENVELOPE_ALLOWED_TERMINAL_STATUS:
+        return None
+    return RuntimeCompletionEnvelope(
+        version=version,
+        task_id=task_id,
+        execution_id=execution_id,
+        terminal_status=terminal_status,
+        result_type=result_type,
+        result_payload=result_payload,
+        emitted_at=emitted_at,
+    )
+
+
+def _read_completion_signal(session_key: str) -> RuntimeCompletionEnvelope | None:
     path = _completion_signal_path(session_key)
     try:
         raw = path.read_text(encoding="utf-8").strip()
@@ -257,9 +302,7 @@ def _read_completion_signal(session_key: str) -> dict[str, Any] | None:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
+    return _parse_runtime_completion_envelope(payload)
 
 
 def _extract_text_from_transcript_line(line: str) -> str:
@@ -342,29 +385,26 @@ def _infer_terminal_status_from_transcript_tail(transcript_tail: str) -> tuple[T
 
 
 def _infer_terminal_status_from_completion_signal(
-    signal: dict[str, Any] | None,
+    signal: RuntimeCompletionEnvelope | None,
     *,
     task_id: str,
     execution_id: str,
 ) -> tuple[TaskStatus, str, str] | None:
     if not signal:
         return None
-    if str(signal.get("task_id") or "").strip() != task_id:
+    if signal.task_id != task_id:
         return None
-    if str(signal.get("execution_id") or "").strip() != execution_id:
+    if signal.execution_id != execution_id:
         return None
-    result_type = str(signal.get("result_type") or "").strip()
-    result_value = str(signal.get("result_value") or signal.get("result_status") or "").strip().lower()
-    if not result_type or not result_value:
+    terminal_map = {
+        "completed": TaskStatus.completed,
+        "failed": TaskStatus.failed,
+    }
+    inferred = terminal_map.get(signal.terminal_status)
+    if inferred is None:
         return None
-    for block_name, _pattern, status_map in _RESULT_BLOCK_PATTERNS:
-        if block_name != result_type:
-            continue
-        inferred = status_map.get(result_value)
-        if inferred is None:
-            return None
-        return inferred, result_type, result_value
-    return None
+    result_type = signal.result_type or "RUNTIME_COMPLETION_ENVELOPE"
+    return inferred, result_type, signal.terminal_status
 
 
 def _run_agent_with_progress_watchdog(
@@ -733,29 +773,29 @@ def run_worker_iteration(
                 task_id=claimed.id,
                 execution_id=claimed.active_execution_id,
             )
-            recovery_source = "completion_signal"
+            recovery_source = COMPLETION_SIGNAL_PRIMARY_SOURCE
             fallback_mode = False
             if inferred_terminal is None:
-                # Compatibility fallback only: transcript parsing is evidence/debugging-oriented and
-                # should not become the long-term completion authority once machine signals are ubiquitous.
+                # Temporary compatibility fallback only: transcript parsing is evidence/debugging-oriented and
+                # must not become the formal completion authority.
                 transcript_tail = _read_transcript_tail(session_key)
                 inferred_terminal = _infer_terminal_status_from_transcript_tail(transcript_tail)
-                recovery_source = "transcript_result_block"
+                recovery_source = COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE
                 fallback_mode = inferred_terminal is not None
             else:
                 transcript_tail = _read_transcript_tail(session_key)
 
             if inferred_terminal is not None:
-                inferred_status, result_block, result_value = inferred_terminal
+                inferred_status, result_type, terminal_status_value = inferred_terminal
                 recovery_metadata = {
                     "runtime_terminal_recovery": recovery_source,
-                    "runtime_terminal_recovery_result_block": result_block,
-                    "runtime_terminal_recovery_result_value": result_value,
+                    "runtime_terminal_recovery_result_type": result_type,
+                    "runtime_terminal_recovery_terminal_status": terminal_status_value,
                     "runtime_terminal_recovery_session_key": session_key,
                     "runtime_terminal_recovery_at": _now_iso(),
                 }
-                if signal_payload is not None and recovery_source == "completion_signal":
-                    recovery_metadata["runtime_terminal_recovery_signal_version"] = str(signal_payload.get("version") or "1")
+                if signal_payload is not None and recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE:
+                    recovery_metadata["runtime_terminal_recovery_signal_version"] = str(signal_payload.version)
                 if fallback_mode:
                     recovery_metadata["runtime_terminal_recovery_compatibility_fallback"] = "true"
                 recovered_decision, recovered_task, recovered_apply = store.apply_runtime_terminal_writeback(
@@ -782,7 +822,7 @@ def run_worker_iteration(
                         "command": command,
                         "sessionKey": session_key,
                         "recoveredStatus": inferred_status.value,
-                        "recoveredFrom": result_block,
+                        "recoveredFrom": result_type,
                         "recoverySource": recovery_source,
                         "taskStatus": terminal_task.status.value if terminal_task is not None else inferred_status.value,
                     }

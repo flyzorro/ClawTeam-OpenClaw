@@ -639,6 +639,46 @@ def test_run_worker_iteration_reports_duplicate_terminal_for_conflicting_termina
     assert updated.metadata["transition_log"][-1]["rejectionReason"] == "duplicate_terminal_conflicting_status"
 
 
+def test_parse_runtime_completion_envelope_validates_schema():
+    envelope = worker_runtime._parse_runtime_completion_envelope({
+        "version": 1,
+        "task_id": "task-1",
+        "execution_id": "task-1-exec-2",
+        "terminal_status": "completed",
+        "result_type": "DEV_RESULT",
+        "result_payload": {"status": "completed"},
+        "emitted_at": "2026-03-24T00:00:00Z",
+    })
+
+    assert envelope is not None
+    assert envelope.version == 1
+    assert envelope.task_id == "task-1"
+    assert envelope.execution_id == "task-1-exec-2"
+    assert envelope.terminal_status == "completed"
+    assert envelope.result_type == "DEV_RESULT"
+    assert envelope.result_payload == {"status": "completed"}
+    assert envelope.emitted_at == "2026-03-24T00:00:00Z"
+
+
+
+def test_parse_runtime_completion_envelope_rejects_invalid_schema():
+    assert worker_runtime._parse_runtime_completion_envelope(None) is None
+    assert worker_runtime._parse_runtime_completion_envelope({"task_id": "x"}) is None
+    assert worker_runtime._parse_runtime_completion_envelope({
+        "version": 2,
+        "task_id": "task-1",
+        "execution_id": "task-1-exec-2",
+        "terminal_status": "completed",
+    }) is None
+    assert worker_runtime._parse_runtime_completion_envelope({
+        "version": 1,
+        "task_id": "task-1",
+        "execution_id": "task-1-exec-2",
+        "terminal_status": "unknown",
+    }) is None
+
+
+
 def test_run_worker_iteration_recovers_terminal_writeback_from_completion_signal(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
@@ -657,7 +697,7 @@ def test_run_worker_iteration_recovers_terminal_writeback_from_completion_signal
     def fake_run(*args, **kwargs):
         claimed["execution_id"] = kwargs["env"]["CLAWTEAM_TASK_EXECUTION_ID"]
         (signal_dir / "clawteam-demo-qa1.completion.json").write_text(
-            '{"version":1,"task_id":"' + task.id + '","execution_id":"' + claimed["execution_id"] + '","result_type":"DEV_RESULT","result_value":"completed"}\n',
+            '{"version":1,"task_id":"' + task.id + '","execution_id":"' + claimed["execution_id"] + '","terminal_status":"completed","result_type":"DEV_RESULT","result_payload":{"status":"completed"}}\n',
             encoding="utf-8",
         )
         return _Completed(returncode=0, stdout="", stderr="")
@@ -675,15 +715,15 @@ def test_run_worker_iteration_recovers_terminal_writeback_from_completion_signal
     assert result["taskId"] == task.id
     assert result["recoveredStatus"] == "completed"
     assert result["recoveredFrom"] == "DEV_RESULT"
-    assert result["recoverySource"] == "completion_signal"
+    assert result["recoverySource"] == "runtime_completion_envelope"
 
     updated = TaskStore("demo").get(task.id)
     assert updated is not None
     assert updated.status.value == "completed"
     assert updated.locked_by == ""
-    assert updated.metadata["runtime_terminal_recovery"] == "completion_signal"
-    assert updated.metadata["runtime_terminal_recovery_result_block"] == "DEV_RESULT"
-    assert updated.metadata["runtime_terminal_recovery_result_value"] == "completed"
+    assert updated.metadata["runtime_terminal_recovery"] == "runtime_completion_envelope"
+    assert updated.metadata["runtime_terminal_recovery_result_type"] == "DEV_RESULT"
+    assert updated.metadata["runtime_terminal_recovery_terminal_status"] == "completed"
     assert updated.metadata["runtime_terminal_recovery_signal_version"] == "1"
     assert updated.last_terminal_status == "completed"
 
@@ -720,15 +760,15 @@ def test_run_worker_iteration_recovers_terminal_writeback_from_transcript_result
     assert result["taskId"] == task.id
     assert result["recoveredStatus"] == "completed"
     assert result["recoveredFrom"] == "DEV_RESULT"
-    assert result["recoverySource"] == "transcript_result_block"
+    assert result["recoverySource"] == "transcript_result_block_temporary_compatibility"
 
     updated = TaskStore("demo").get(task.id)
     assert updated is not None
     assert updated.status.value == "completed"
     assert updated.locked_by == ""
-    assert updated.metadata["runtime_terminal_recovery"] == "transcript_result_block"
-    assert updated.metadata["runtime_terminal_recovery_result_block"] == "DEV_RESULT"
-    assert updated.metadata["runtime_terminal_recovery_result_value"] == "completed"
+    assert updated.metadata["runtime_terminal_recovery"] == "transcript_result_block_temporary_compatibility"
+    assert updated.metadata["runtime_terminal_recovery_result_type"] == "DEV_RESULT"
+    assert updated.metadata["runtime_terminal_recovery_terminal_status"] == "completed"
     assert updated.metadata["runtime_terminal_recovery_compatibility_fallback"] == "true"
     assert updated.last_terminal_status == "completed"
 
