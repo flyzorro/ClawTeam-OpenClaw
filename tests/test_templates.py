@@ -4,12 +4,15 @@ import pytest
 
 from clawteam.templates import (
     AgentDef,
+    LaunchBriefSections,
     TaskDef,
     TemplateDef,
     _SafeDict,
     list_templates,
     load_template,
+    parse_launch_brief,
     render_task,
+    render_task_brief,
     resolve_template_topology,
 )
 
@@ -34,6 +37,67 @@ class TestRenderTask:
     def test_multiple_same_variable(self):
         result = render_task("{x} and {x}", x="foo")
         assert result == "foo and foo"
+
+
+class TestLaunchBrief:
+    def test_parse_launch_brief_falls_back_to_scoped_brief(self):
+        parsed = parse_launch_brief(
+            source_request="Ship the feature safely",
+            leader_brief="Clarify scope and acceptance criteria.",
+        )
+
+        assert parsed == LaunchBriefSections(
+            source_request="Ship the feature safely",
+            scoped_brief="Clarify scope and acceptance criteria.",
+            unknowns=[],
+            leader_assumptions=[],
+            out_of_scope=[],
+        )
+
+    def test_parse_launch_brief_structured_sections(self):
+        parsed = parse_launch_brief(
+            source_request="Original request",
+            leader_brief="""
+## Source Request
+User asked for a safe rollout.
+
+## Scoped Brief
+Deliver the smallest safe change.
+
+## Unknowns
+- final prod env
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+""".strip(),
+        )
+
+        assert parsed.source_request == "User asked for a safe rollout."
+        assert parsed.scoped_brief == "Deliver the smallest safe change."
+        assert parsed.unknowns == ["final prod env"]
+        assert parsed.leader_assumptions == ["existing tests are representative"]
+        assert parsed.out_of_scope == ["dashboard rewrite"]
+
+    def test_render_task_brief_wraps_old_prose_into_sections(self):
+        rendered = render_task_brief(
+            "Goal:\nClarify {goal} into a minimal deliverable.",
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            agent_name="leader",
+        )
+
+        assert "## Source Request" in rendered
+        assert "Ship the feature safely" in rendered
+        assert "## Scoped Brief" in rendered
+        assert "Clarify Ship the feature safely into a minimal deliverable." in rendered
+        assert "## Unknowns" in rendered
+        assert "## Leader Assumptions" in rendered
+        assert "## Out of Scope" in rendered
+        assert "## Interpretation Rules" in rendered
+        assert "Do not silently convert Unknowns into requirements." in rendered
 
 
 class TestSafeDict:

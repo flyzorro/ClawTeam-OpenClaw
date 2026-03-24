@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # TOML support: built-in on 3.11+, conditional dependency on 3.10
 if sys.version_info >= (3, 11):
@@ -50,6 +50,15 @@ class TemplateDef(BaseModel):
     tasks: list[TaskDef] = []
 
 
+class LaunchBriefSections(BaseModel):
+    version: str = "v1"
+    source_request: str = ""
+    scoped_brief: str = ""
+    unknowns: list[str] = Field(default_factory=list)
+    leader_assumptions: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -72,6 +81,100 @@ class _SafeDict(dict):
 def render_task(task: str, **variables: str) -> str:
     """Replace {goal}, {team_name}, {agent_name} etc. in task text."""
     return task.format_map(_SafeDict(**variables))
+
+
+def _normalize_lines(value: str) -> list[str]:
+    lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- "):
+            stripped = stripped[2:].strip()
+        lines.append(stripped)
+    return lines
+
+
+def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBriefSections:
+    """Parse a structured launch brief when present, else fall back to prose.
+
+    Structured format is intentionally minimal and section-labeled:
+    ## Source Request
+    ## Scoped Brief
+    ## Unknowns
+    ## Leader Assumptions
+    ## Out of Scope
+    """
+    text = leader_brief.strip()
+    if not text:
+        return LaunchBriefSections(source_request=source_request)
+
+    labels = {
+        "source request": "source_request",
+        "scoped brief": "scoped_brief",
+        "unknowns": "unknowns",
+        "leader assumptions": "leader_assumptions",
+        "out of scope": "out_of_scope",
+    }
+    current: str | None = None
+    sections: dict[str, list[str]] = {value: [] for value in labels.values()}
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("## "):
+            key = lowered[3:].strip()
+            current = labels.get(key)
+            continue
+        if current is not None:
+            sections[current].append(line)
+
+    if any(sections.values()):
+        return LaunchBriefSections(
+            source_request="\n".join(sections["source_request"]).strip() or source_request,
+            scoped_brief="\n".join(sections["scoped_brief"]).strip(),
+            unknowns=_normalize_lines("\n".join(sections["unknowns"])),
+            leader_assumptions=_normalize_lines("\n".join(sections["leader_assumptions"])),
+            out_of_scope=_normalize_lines("\n".join(sections["out_of_scope"])),
+        )
+
+    return LaunchBriefSections(
+        source_request=source_request,
+        scoped_brief=text,
+    )
+
+
+def render_task_brief(task: str, **variables: str) -> str:
+    """Render a downstream task description with explicit brief sections.
+
+    This is a compatibility-first boundary cleanup: old prose becomes Scoped Brief,
+    while Source Request remains the original goal/request.
+    """
+    rendered = render_task(task, **variables).strip()
+    sections = parse_launch_brief(
+        source_request=variables.get("goal", ""),
+        leader_brief=rendered,
+    )
+
+    def _bullet_lines(values: list[str]) -> str:
+        return "\n".join(f"- {value}" for value in values) if values else "- none"
+
+    return "\n\n".join(
+        [
+            f"## Source Request\n{sections.source_request or '- none'}",
+            f"## Scoped Brief\n{sections.scoped_brief or '- none'}",
+            f"## Unknowns\n{_bullet_lines(sections.unknowns)}",
+            f"## Leader Assumptions\n{_bullet_lines(sections.leader_assumptions)}",
+            f"## Out of Scope\n{_bullet_lines(sections.out_of_scope)}",
+            "## Interpretation Rules\n"
+            "- Treat Source Request as the original user intent.\n"
+            "- Treat Scoped Brief as the current working scope.\n"
+            "- Do not silently convert Unknowns into requirements.\n"
+            "- Treat Leader Assumptions as provisional, not confirmed fact.\n"
+            "- Do not implement Out of Scope items in the current task.",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
