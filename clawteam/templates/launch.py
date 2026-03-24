@@ -56,6 +56,15 @@ class LaunchExecutionResult(BaseModel):
     created_task_ids: dict[str, str] = Field(default_factory=dict)
 
 
+class TaskLaunchBriefView(BaseModel):
+    format: str = "prose_fallback"
+    source_request: str = ""
+    scoped_brief: str = ""
+    unknowns: list[str] = Field(default_factory=list)
+    leader_assumptions: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+
+
 NormalizedLaunchBrief.model_rebuild()
 PreparedTaskLaunchBrief.model_rebuild()
 LaunchTaskInput.model_rebuild()
@@ -185,6 +194,40 @@ def prepare_task_launch_brief(task: str, *, render_task, **variables: str) -> Pr
 def render_task_brief(task: str, *, render_task, **variables: str) -> str:
     """Backward-compatible helper returning only rendered launch description."""
     return prepare_task_launch_brief(task, render_task=render_task, **variables).rendered_description
+
+
+def read_launch_brief_metadata(metadata: dict[str, object] | None) -> NormalizedLaunchBrief | None:
+    """Read the canonical machine launch-brief contract from task metadata only."""
+    if not metadata:
+        return None
+
+    launch_brief = metadata.get("launch_brief")
+    if launch_brief is None:
+        return None
+    if not isinstance(launch_brief, dict):
+        raise LaunchTaskBuildError("Task launch_brief metadata must be a mapping.")
+
+    return NormalizedLaunchBrief.model_validate(launch_brief)
+
+
+def read_task_launch_brief(task) -> TaskLaunchBriefView | None:
+    """Return the canonical task launch-brief view from metadata only.
+
+    Intentionally does not parse task.description. Human-facing description is presentation;
+    task.metadata['launch_brief'] is the machine-readable contract boundary.
+    """
+    normalized = read_launch_brief_metadata(getattr(task, "metadata", None))
+    if normalized is None:
+        return None
+
+    return TaskLaunchBriefView(
+        format=normalized.format,
+        source_request=normalized.sections.source_request,
+        scoped_brief=normalized.sections.scoped_brief,
+        unknowns=list(normalized.sections.unknowns),
+        leader_assumptions=list(normalized.sections.leader_assumptions),
+        out_of_scope=list(normalized.sections.out_of_scope),
+    )
 
 
 def build_launch_task_input(
