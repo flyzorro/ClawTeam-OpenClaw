@@ -80,6 +80,8 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert "Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges" in prompt
     assert "Use structured result blocks instead of free-form prose" in prompt
     assert "QA_RESULT must include exactly these headings" in prompt
+    assert "The task brief in Description is the current scope authority." in prompt
+    assert "they do not by themselves approve new endpoints, APIs, schemas, pages, tabs, workflows, or deliverables." in prompt
 
 
 def test_build_worker_task_prompt_includes_active_execution_when_claimed(monkeypatch, tmp_path):

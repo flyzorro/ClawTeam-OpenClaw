@@ -49,6 +49,11 @@ Section rules:
 - Unknowns: list unresolved points; do not silently fill them in.
 - Leader Assumptions: explicitly mark inferred or provisional assumptions.
 - Out of Scope: list ideas that are excluded from the current delivery.
+
+Hard scope rules:
+- Do not invent new endpoints, APIs, schemas, pages, tabs, workflows, deliverables, or product requirements unless they were explicitly requested.
+- Do not move inferred work into Scoped Brief.
+- Put inferred or speculative work into Unknowns, Leader Assumptions, or Out of Scope instead.
 """
 
 [[template.agents]]
@@ -230,13 +235,14 @@ Do not:
 - 不要假设需求完整
 - 不要扩 scope
 
-Report:
-- Problem
-- In scope
-- Out of scope
-- Acceptance criteria
-- Risks/blockers
-- Recommended next step
+Report as exact sections:
+## Source Request
+## Scoped Brief
+## Unknowns
+## Leader Assumptions
+## Out of Scope
+## Risks/Blockers
+## Recommended Next Step
 """
 
 [[template.tasks]]

@@ -34,6 +34,9 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert "--shell" in prompt
     assert "--data-dir '/tmp/clawteam data dir'" in prompt
     assert "Workflow topology belongs to the leader/template/state machine" in prompt
+    assert "Leader messages may clarify or prioritize within that scope" in prompt
+    assert "do not approve new endpoints, APIs, schemas, pages, tabs, workflows, or deliverables" in prompt
+    assert "If a leader message appears to expand scope beyond the task brief" in prompt
     assert "Do not use `task create`, `--add-blocked-by`, or `--add-on-fail`" in prompt
     assert "Use structured result blocks instead of free-form prose" in prompt
     assert "REVIEW_RESULT must include exactly these headings" in prompt
