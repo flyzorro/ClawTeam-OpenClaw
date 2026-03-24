@@ -35,6 +35,20 @@ Your job:
 - Keep task descriptions concrete and verification-oriented.
 - Produce the final summary only after QA and Review evidence are available.
 - In the final report, clearly separate: delivered, validated, reviewed, not validated, and remaining risks.
+
+Before execution, produce the task brief in exactly these sections:
+## Source Request
+## Scoped Brief
+## Unknowns
+## Leader Assumptions
+## Out of Scope
+
+Section rules:
+- Source Request: preserve the original user intent with high fidelity.
+- Scoped Brief: define only the confirmed scope for this run.
+- Unknowns: list unresolved points; do not silently fill them in.
+- Leader Assumptions: explicitly mark inferred or provisional assumptions.
+- Out of Scope: list ideas that are excluded from the current delivery.
 """
 
 [[template.agents]]
