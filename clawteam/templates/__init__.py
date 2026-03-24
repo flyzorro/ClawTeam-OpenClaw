@@ -64,7 +64,14 @@ class NormalizedLaunchBrief(BaseModel):
     sections: LaunchBriefSections = Field(default_factory=LaunchBriefSections)
 
 
+class PreparedTaskLaunchBrief(BaseModel):
+    rendered_description: str
+    normalized_brief: NormalizedLaunchBrief
+    metadata_patch: dict[str, object] = Field(default_factory=dict)
+
+
 NormalizedLaunchBrief.model_rebuild()
+PreparedTaskLaunchBrief.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
@@ -170,17 +177,7 @@ def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBrief
     ).sections
 
 
-def render_task_brief(task: str, **variables: str) -> str:
-    """Render a downstream task description with explicit brief sections.
-
-    This is a compatibility-first boundary cleanup: old prose becomes Scoped Brief,
-    while Source Request remains the original goal/request.
-    """
-    rendered = render_task(task, **variables).strip()
-    normalized = normalize_launch_brief(
-        source_request=variables.get("goal", ""),
-        leader_brief=rendered,
-    )
+def _render_normalized_launch_brief(normalized: NormalizedLaunchBrief) -> str:
     sections = normalized.sections
 
     def _bullet_lines(values: list[str]) -> str:
@@ -202,6 +199,28 @@ def render_task_brief(task: str, **variables: str) -> str:
             "- Do not implement Out of Scope items in the current task.",
         ]
     )
+
+
+def prepare_task_launch_brief(task: str, **variables: str) -> PreparedTaskLaunchBrief:
+    """Single launch-boundary entrypoint for task brief preparation.
+
+    This keeps render/normalize/metadata logic out of the CLI composition root.
+    """
+    rendered = render_task(task, **variables).strip()
+    normalized = normalize_launch_brief(
+        source_request=variables.get("goal", ""),
+        leader_brief=rendered,
+    )
+    return PreparedTaskLaunchBrief(
+        rendered_description=_render_normalized_launch_brief(normalized),
+        normalized_brief=normalized,
+        metadata_patch={"launch_brief": normalized.model_dump(mode="json")},
+    )
+
+
+def render_task_brief(task: str, **variables: str) -> str:
+    """Backward-compatible helper returning only rendered launch description."""
+    return prepare_task_launch_brief(task, **variables).rendered_description
 
 
 # ---------------------------------------------------------------------------
