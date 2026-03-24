@@ -2580,26 +2580,16 @@ def launch_team(
     ts = TaskStore(t_name)
     created_task_ids: dict[str, str] = {}
     for task_def in tmpl.tasks:
-        missing_dependencies = [name for name in task_def.blocked_by if name not in created_task_ids]
-        if missing_dependencies:
-            console.print(
-                f"[red]Template task '{task_def.subject}' references unknown or not-yet-created blocked_by tasks: {', '.join(missing_dependencies)}[/red]"
+        try:
+            launch_task_input = build_launch_task_input(
+                task_def,
+                goal=goal,
+                team_name=t_name,
+                created_task_ids=created_task_ids,
             )
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
             raise typer.Exit(1)
-
-        missing_fail_targets = [name for name in task_def.on_fail if name not in created_task_ids]
-        if missing_fail_targets:
-            console.print(
-                f"[red]Template task '{task_def.subject}' references unknown or not-yet-created on_fail tasks: {', '.join(missing_fail_targets)}[/red]"
-            )
-            raise typer.Exit(1)
-
-        launch_task_input = build_launch_task_input(
-            task_def,
-            goal=goal,
-            team_name=t_name,
-            created_task_ids=created_task_ids,
-        )
 
         task = ts.create(
             subject=launch_task_input.subject,

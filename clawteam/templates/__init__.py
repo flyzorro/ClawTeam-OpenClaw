@@ -241,9 +241,22 @@ def build_launch_task_input(
 ) -> LaunchTaskInput:
     """Canonical launch-task preparation entrypoint.
 
-    Produces the task payload consumed by the CLI create path so description and
-    metadata stay derived from one launch-boundary decision.
+    Produces the task payload consumed by the CLI create path so description,
+    reference validation, and metadata stay derived from one launch-boundary
+    decision.
     """
+    missing_dependencies = [name for name in task_def.blocked_by if name not in created_task_ids]
+    if missing_dependencies:
+        raise ValueError(
+            f"Template task '{task_def.subject}' references unknown or not-yet-created blocked_by tasks: {', '.join(missing_dependencies)}"
+        )
+
+    missing_fail_targets = [name for name in task_def.on_fail if name not in created_task_ids]
+    if missing_fail_targets:
+        raise ValueError(
+            f"Template task '{task_def.subject}' references unknown or not-yet-created on_fail tasks: {', '.join(missing_fail_targets)}"
+        )
+
     metadata: dict[str, object] = {}
     if task_def.on_fail:
         metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
