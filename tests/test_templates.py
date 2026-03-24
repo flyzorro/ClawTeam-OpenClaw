@@ -4,12 +4,31 @@ import pytest
 
 from clawteam.templates import (
     AgentDef,
+    LaunchBriefSections,
+    LaunchExecutionResult,
+    LaunchReferenceError,
+    LaunchTaskBuildError,
+    LaunchTaskInput,
+    LaunchTemplateError,
+    NormalizedLaunchBrief,
+    PreparedTaskLaunchBrief,
     TaskDef,
+    TaskLaunchBriefView,
     TemplateDef,
     _SafeDict,
+    build_launch_task_input,
+    execute_template_launch,
+    find_scope_inventions,
     list_templates,
     load_template,
+    normalize_launch_brief,
+    parse_launch_brief,
+    prepare_task_launch_brief,
+    read_launch_brief_metadata,
+    read_task_launch_brief,
     render_task,
+    render_task_brief,
+    resolve_template_topology,
 )
 
 
@@ -35,6 +54,447 @@ class TestRenderTask:
         assert result == "foo and foo"
 
 
+class _FakeCreatedTask:
+    def __init__(self, task_id: str):
+        self.id = task_id
+
+
+class _FakeTask:
+    def __init__(self, *, description: str = "", metadata: dict[str, object] | None = None):
+        self.description = description
+        self.metadata = metadata or {}
+
+
+class _FakeTaskStore:
+    def __init__(self):
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, *, subject: str, description: str, owner: str, blocked_by: list[str], metadata: dict[str, object]):
+        task_id = f"task-{len(self.calls) + 1}"
+        call = {
+            "subject": subject,
+            "description": description,
+            "owner": owner,
+            "blocked_by": blocked_by,
+            "metadata": metadata,
+            "id": task_id,
+        }
+        self.calls.append(call)
+        return _FakeCreatedTask(task_id)
+
+
+class TestLaunchBrief:
+    def test_normalize_launch_brief_marks_prose_fallback(self):
+        normalized = normalize_launch_brief(
+            source_request="Ship the feature safely",
+            leader_brief="Clarify scope and acceptance criteria.",
+        )
+
+        assert normalized == NormalizedLaunchBrief(
+            format="prose_fallback",
+            sections=LaunchBriefSections(
+                source_request="Ship the feature safely",
+                scoped_brief="Clarify scope and acceptance criteria.",
+                unknowns=[],
+                leader_assumptions=[],
+                out_of_scope=[],
+            ),
+        )
+
+    def test_parse_launch_brief_falls_back_to_scoped_brief(self):
+        parsed = parse_launch_brief(
+            source_request="Ship the feature safely",
+            leader_brief="Clarify scope and acceptance criteria.",
+        )
+
+        assert parsed == LaunchBriefSections(
+            source_request="Ship the feature safely",
+            scoped_brief="Clarify scope and acceptance criteria.",
+            unknowns=[],
+            leader_assumptions=[],
+            out_of_scope=[],
+        )
+
+    def test_normalize_launch_brief_empty(self):
+        normalized = normalize_launch_brief(
+            source_request="Original request",
+            leader_brief="   ",
+        )
+
+        assert normalized == NormalizedLaunchBrief(
+            format="empty",
+            sections=LaunchBriefSections(
+                source_request="Original request",
+                scoped_brief="",
+                unknowns=[],
+                leader_assumptions=[],
+                out_of_scope=[],
+            ),
+        )
+
+    def test_normalize_launch_brief_structured_sections(self):
+        normalized = normalize_launch_brief(
+            source_request="Original request",
+            leader_brief="""
+## Source Request
+User asked for a safe rollout.
+
+## Scoped Brief
+Deliver the smallest safe change.
+
+## Unknowns
+- final prod env
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+""".strip(),
+        )
+
+        assert normalized.format == "structured_sections"
+        assert normalized.sections.source_request == "User asked for a safe rollout."
+        assert normalized.sections.scoped_brief == "Deliver the smallest safe change."
+        assert normalized.sections.unknowns == ["final prod env"]
+        assert normalized.sections.leader_assumptions == ["existing tests are representative"]
+        assert normalized.sections.out_of_scope == ["dashboard rewrite"]
+
+    def test_parse_launch_brief_structured_sections(self):
+        parsed = parse_launch_brief(
+            source_request="Original request",
+            leader_brief="""
+## Source Request
+User asked for a safe rollout.
+
+## Scoped Brief
+Deliver the smallest safe change.
+
+## Unknowns
+- final prod env
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+""".strip(),
+        )
+
+        assert parsed.source_request == "User asked for a safe rollout."
+        assert parsed.scoped_brief == "Deliver the smallest safe change."
+        assert parsed.unknowns == ["final prod env"]
+        assert parsed.leader_assumptions == ["existing tests are representative"]
+        assert parsed.out_of_scope == ["dashboard rewrite"]
+
+    def test_find_scope_inventions_flags_explicit_additive_entities_missing_from_source_request(self):
+        inventions = find_scope_inventions(
+            source_request="Add a small UI polish to the member list.",
+            scoped_brief="Add a new API endpoint and schema for member list data.",
+        )
+
+        assert inventions == ["endpoint", "api", "schema"]
+
+    def test_find_scope_inventions_requires_new_to_attach_to_risky_entity(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Document new acceptance notes for the existing member list behavior.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_allows_entities_when_already_in_source_request(self):
+        inventions = find_scope_inventions(
+            source_request="Add a new API endpoint for member list data.",
+            scoped_brief="Implement the API endpoint and validate the response.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_does_not_treat_new_vocabulary_alone_as_invention(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Clarify the API behavior used by the current member list UI.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_ignores_negated_additive_language(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Clarify the API behavior used by the current member list UI without adding new endpoints.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_accepts_bare_new_without_risky_entity_phrase(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Clarify the current flow and note new context for reviewers.",
+        )
+
+        assert inventions == []
+
+    def test_prepare_task_launch_brief_is_single_entrypoint(self):
+        prepared = prepare_task_launch_brief(
+            "Goal:\nClarify {goal} into a minimal deliverable.",
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            agent_name="leader",
+        )
+
+        assert prepared == PreparedTaskLaunchBrief(
+            rendered_description=prepared.rendered_description,
+            normalized_brief=NormalizedLaunchBrief(
+                format="prose_fallback",
+                sections=LaunchBriefSections(
+                    source_request="Ship the feature safely",
+                    scoped_brief="Goal:\nClarify Ship the feature safely into a minimal deliverable.",
+                    unknowns=[],
+                    leader_assumptions=[],
+                    out_of_scope=[],
+                ),
+            ),
+            metadata_patch={
+                "launch_brief": {
+                    "format": "prose_fallback",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Goal:\nClarify Ship the feature safely into a minimal deliverable.",
+                        "unknowns": [],
+                        "leader_assumptions": [],
+                        "out_of_scope": [],
+                    },
+                }
+            },
+        )
+        assert "## Brief Format\nprose_fallback" in prepared.rendered_description
+
+    def test_build_launch_task_input_keeps_description_and_metadata_same_source(self):
+        task_input = build_launch_task_input(
+            TaskDef(
+                subject="Implement",
+                description="Clarify {goal} into a minimal deliverable.",
+                owner="dev1",
+                blocked_by=["Scope"],
+                on_fail=["Scope"],
+            ),
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            created_task_ids={"Scope": "task-scope-1"},
+        )
+
+        assert task_input == LaunchTaskInput(
+            subject="Implement",
+            description=task_input.description,
+            owner="dev1",
+            blocked_by=["task-scope-1"],
+            metadata={
+                "on_fail": ["task-scope-1"],
+                "launch_brief": {
+                    "format": "prose_fallback",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Clarify Ship the feature safely into a minimal deliverable.",
+                        "unknowns": [],
+                        "leader_assumptions": [],
+                        "out_of_scope": [],
+                    },
+                },
+            },
+        )
+        assert "## Source Request" in task_input.description
+        assert "## Brief Format\nprose_fallback" in task_input.description
+
+    def test_build_launch_task_input_rejects_unknown_blocked_by_reference(self):
+        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope") as exc:
+            build_launch_task_input(
+                TaskDef(
+                    subject="Implement",
+                    description="Clarify {goal} into a minimal deliverable.",
+                    owner="dev1",
+                    blocked_by=["MissingScope"],
+                ),
+                goal="Ship the feature safely",
+                team_name="delivery-demo",
+                created_task_ids={},
+            )
+
+        assert exc.value.task_subject == "Implement"
+        assert exc.value.reference_kind == "blocked_by"
+        assert exc.value.missing_refs == ["MissingScope"]
+
+    def test_build_launch_task_input_rejects_unknown_on_fail_reference(self):
+        with pytest.raises(LaunchReferenceError, match="on_fail tasks: MissingImplement") as exc:
+            build_launch_task_input(
+                TaskDef(
+                    subject="QA",
+                    description="Validate the deliverable.",
+                    owner="qa1",
+                    on_fail=["MissingImplement"],
+                ),
+                goal="Ship the feature safely",
+                team_name="delivery-demo",
+                created_task_ids={},
+            )
+
+        assert exc.value.task_subject == "QA"
+        assert exc.value.reference_kind == "on_fail"
+        assert exc.value.missing_refs == ["MissingImplement"]
+
+    def test_execute_template_launch_creates_tasks_in_authored_order_and_backfills_ids(self):
+        store = _FakeTaskStore()
+
+        result = execute_template_launch(
+            store,
+            [
+                TaskDef(
+                    subject="Scope",
+                    description="Clarify {goal}.",
+                    owner="lead",
+                ),
+                TaskDef(
+                    subject="Implement",
+                    description="Build the change.",
+                    owner="dev1",
+                    blocked_by=["Scope"],
+                    on_fail=["Scope"],
+                ),
+            ],
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+        )
+
+        assert result == LaunchExecutionResult(
+            created_task_ids={
+                "Scope": "task-1",
+                "Implement": "task-2",
+            }
+        )
+        assert [call["subject"] for call in store.calls] == ["Scope", "Implement"]
+        assert store.calls[1]["blocked_by"] == ["task-1"]
+        assert store.calls[1]["metadata"]["on_fail"] == ["task-1"]
+        assert store.calls[1]["metadata"]["launch_brief"]["format"] == "prose_fallback"
+        assert "## Interpretation Rules" in store.calls[1]["description"]
+
+    def test_execute_template_launch_surfaces_reference_error_without_partial_hidden_logic(self):
+        store = _FakeTaskStore()
+
+        assert issubclass(LaunchReferenceError, LaunchTemplateError)
+
+        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope") as exc:
+            execute_template_launch(
+                store,
+                [
+                    TaskDef(
+                        subject="Implement",
+                        description="Build the change.",
+                        owner="dev1",
+                        blocked_by=["MissingScope"],
+                    )
+                ],
+                goal="Ship the feature safely",
+                team_name="delivery-demo",
+            )
+
+        assert exc.value.task_subject == "Implement"
+        assert exc.value.reference_kind == "blocked_by"
+        assert exc.value.missing_refs == ["MissingScope"]
+        assert store.calls == []
+
+    def test_read_launch_brief_metadata_returns_normalized_contract(self):
+        normalized = read_launch_brief_metadata(
+            {
+                "launch_brief": {
+                    "format": "structured_sections",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Implement only the minimal flow.",
+                        "unknowns": ["Final API timeout"],
+                        "leader_assumptions": ["Existing auth can be reused"],
+                        "out_of_scope": ["Billing redesign"],
+                    },
+                }
+            }
+        )
+
+        assert normalized == NormalizedLaunchBrief(
+            format="structured_sections",
+            sections=LaunchBriefSections(
+                source_request="Ship the feature safely",
+                scoped_brief="Implement only the minimal flow.",
+                unknowns=["Final API timeout"],
+                leader_assumptions=["Existing auth can be reused"],
+                out_of_scope=["Billing redesign"],
+            ),
+        )
+
+    def test_read_task_launch_brief_prefers_metadata_contract(self):
+        task = _FakeTask(
+            description="## Source Request\nWRONG\n\n## Scoped Brief\nWRONG",
+            metadata={
+                "launch_brief": {
+                    "format": "prose_fallback",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Implement only the minimal flow.",
+                        "unknowns": [],
+                        "leader_assumptions": ["Existing auth can be reused"],
+                        "out_of_scope": ["Billing redesign"],
+                    },
+                }
+            },
+        )
+
+        assert read_task_launch_brief(task) == TaskLaunchBriefView(
+            format="prose_fallback",
+            source_request="Ship the feature safely",
+            scoped_brief="Implement only the minimal flow.",
+            unknowns=[],
+            leader_assumptions=["Existing auth can be reused"],
+            out_of_scope=["Billing redesign"],
+        )
+
+    def test_read_task_launch_brief_does_not_parse_description_without_metadata(self):
+        task = _FakeTask(
+            description=(
+                "## Source Request\nWrong source\n\n"
+                "## Scoped Brief\nWrong scope\n\n"
+                "## Unknowns\n- Wrong unknown"
+            ),
+            metadata={},
+        )
+
+        assert read_task_launch_brief(task) is None
+
+    def test_read_launch_brief_metadata_rejects_non_mapping_contract(self):
+        with pytest.raises(LaunchTaskBuildError, match="launch_brief metadata must be a mapping"):
+            read_launch_brief_metadata({"launch_brief": "not-a-mapping"})
+
+    def test_render_task_brief_wraps_old_prose_into_sections(self):
+        rendered = render_task_brief(
+            "Goal:\nClarify {goal} into a minimal deliverable.",
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            agent_name="leader",
+        )
+
+        assert "## Source Request" in rendered
+        assert "Ship the feature safely" in rendered
+        assert "## Scoped Brief" in rendered
+        assert "Clarify Ship the feature safely into a minimal deliverable." in rendered
+        assert "## Unknowns" in rendered
+        assert "## Leader Assumptions" in rendered
+        assert "## Out of Scope" in rendered
+        assert "## Brief Format\nprose_fallback" in rendered
+        assert "## Interpretation Rules" in rendered
+        assert "Do not silently convert Unknowns into requirements." in rendered
+
+
 class TestSafeDict:
     def test_missing_key_returns_placeholder(self):
         d = _SafeDict(a="1")
@@ -54,14 +514,76 @@ class TestModels:
         t = TaskDef(subject="Build feature", description="details", owner="alice")
         assert t.subject == "Build feature"
 
+    def test_task_def_blocked_by(self):
+        t = TaskDef(subject="Build feature", blocked_by=["Setup"])
+        assert t.blocked_by == ["Setup"]
+
+    def test_task_def_on_fail(self):
+        t = TaskDef(subject="Run QA", on_fail=["Implement"])
+        assert t.on_fail == ["Implement"]
+
+    def test_task_def_stage(self):
+        t = TaskDef(subject="Run QA", stage="qa")
+        assert t.stage == "qa"
+
+    def test_task_def_message_contract(self):
+        t = TaskDef(
+            subject="Run QA",
+            message_type="QA_RESULT",
+            required_sections=["status", "summary", "evidence"],
+        )
+        assert t.message_type == "QA_RESULT"
+        assert t.required_sections == ["status", "summary", "evidence"]
+
     def test_template_def_defaults(self):
         leader = AgentDef(name="lead")
         t = TemplateDef(name="my-tmpl", leader=leader)
         assert t.description == ""
         assert t.command == ["openclaw"]
         assert t.backend == "tmux"
+        assert t.topology_mode == "explicit"
         assert t.agents == []
         assert t.tasks == []
+
+
+class TestTopologyResolver:
+    def test_delivery_default_resolver_fills_missing_edges(self):
+        tmpl = TemplateDef(
+            name="delivery",
+            topology_mode="delivery-default",
+            leader=AgentDef(name="leader"),
+            tasks=[
+                TaskDef(subject="Scope", owner="leader", stage="scope"),
+                TaskDef(subject="Setup", owner="config1", stage="setup"),
+                TaskDef(subject="Implement backend", owner="dev1", stage="implement"),
+                TaskDef(subject="Implement frontend", owner="dev2", stage="implement"),
+                TaskDef(subject="QA", owner="qa1", stage="qa"),
+                TaskDef(subject="Review", owner="review1", stage="review"),
+                TaskDef(subject="Deliver", owner="leader", stage="deliver"),
+            ],
+        )
+
+        resolved = resolve_template_topology(tmpl)
+        by_subject = {task.subject: task for task in resolved.tasks}
+        assert by_subject["Setup"].blocked_by == ["Scope"]
+        assert by_subject["Implement backend"].blocked_by == ["Setup"]
+        assert by_subject["Implement frontend"].blocked_by == ["Setup"]
+        assert by_subject["QA"].blocked_by == ["Implement backend", "Implement frontend"]
+        assert by_subject["QA"].on_fail == ["Implement backend", "Implement frontend"]
+        assert by_subject["Review"].blocked_by == ["QA"]
+        assert by_subject["Review"].on_fail == ["Implement backend", "Implement frontend"]
+        assert by_subject["Deliver"].blocked_by == ["Review"]
+
+    def test_delivery_default_resolver_fails_closed_without_stage(self):
+        tmpl = TemplateDef(
+            name="broken",
+            topology_mode="delivery-default",
+            leader=AgentDef(name="leader"),
+            tasks=[TaskDef(subject="Scope", owner="leader")],
+        )
+
+        with pytest.raises(ValueError, match="missing stage"):
+            resolve_template_topology(tmpl)
 
 
 class TestLoadBuiltinTemplate:
@@ -87,6 +609,61 @@ class TestLoadBuiltinTemplate:
         for task in tmpl.tasks:
             if task.owner:
                 assert task.owner in agent_names, f"Task owner '{task.owner}' not in agents"
+
+    def test_five_step_delivery_parallel_structure(self):
+        tmpl = load_template("five-step-delivery")
+        assert tmpl.topology_mode == "delivery-default"
+        agent_names = {tmpl.leader.name} | {a.name for a in tmpl.agents}
+        assert {"config1", "dev1", "dev2", "qa1", "qa2", "review1"}.issubset(agent_names)
+
+        by_subject = {task.subject: task for task in tmpl.tasks}
+        assert by_subject["Scope the task into a minimal deliverable"].stage == "scope"
+        assert by_subject["Prepare repo, branch, env, and runnable baseline"].stage == "setup"
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].stage == "review"
+        assert by_subject["Implement backend/data changes with real validation"].blocked_by == [
+            "Prepare repo, branch, env, and runnable baseline"
+        ]
+        assert by_subject["Implement frontend/UI changes with real validation"].blocked_by == [
+            "Prepare repo, branch, env, and runnable baseline"
+        ]
+        assert by_subject["Run main-flow QA on the real change"].blocked_by == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Run edge-case and regression QA on the real change"].blocked_by == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].blocked_by == [
+            "Run main-flow QA on the real change",
+            "Run edge-case and regression QA on the real change",
+        ]
+        assert by_subject["Run main-flow QA on the real change"].on_fail == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Run edge-case and regression QA on the real change"].on_fail == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].on_fail == [
+            "Implement backend/data changes with real validation",
+            "Implement frontend/UI changes with real validation",
+        ]
+        assert by_subject["Implement backend/data changes with real validation"].message_type == "DEV_RESULT"
+        assert by_subject["Implement frontend/UI changes with real validation"].message_type == "DEV_RESULT"
+        assert by_subject["Run main-flow QA on the real change"].message_type == "QA_RESULT"
+        assert by_subject["Run edge-case and regression QA on the real change"].message_type == "QA_RESULT"
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].message_type == "REVIEW_RESULT"
+        assert by_subject["Review code quality, maintainability, and delivery readiness"].required_sections == [
+            "decision",
+            "summary",
+            "architecture_review",
+            "required_fixes",
+            "evidence",
+            "validation",
+            "next_action",
+        ]
 
 
 class TestLoadTemplateNotFound:
