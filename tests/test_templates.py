@@ -5,11 +5,13 @@ import pytest
 from clawteam.templates import (
     AgentDef,
     LaunchBriefSections,
+    NormalizedLaunchBrief,
     TaskDef,
     TemplateDef,
     _SafeDict,
     list_templates,
     load_template,
+    normalize_launch_brief,
     parse_launch_brief,
     render_task,
     render_task_brief,
@@ -40,6 +42,23 @@ class TestRenderTask:
 
 
 class TestLaunchBrief:
+    def test_normalize_launch_brief_marks_prose_fallback(self):
+        normalized = normalize_launch_brief(
+            source_request="Ship the feature safely",
+            leader_brief="Clarify scope and acceptance criteria.",
+        )
+
+        assert normalized == NormalizedLaunchBrief(
+            format="prose_fallback",
+            sections=LaunchBriefSections(
+                source_request="Ship the feature safely",
+                scoped_brief="Clarify scope and acceptance criteria.",
+                unknowns=[],
+                leader_assumptions=[],
+                out_of_scope=[],
+            ),
+        )
+
     def test_parse_launch_brief_falls_back_to_scoped_brief(self):
         parsed = parse_launch_brief(
             source_request="Ship the feature safely",
@@ -53,6 +72,34 @@ class TestLaunchBrief:
             leader_assumptions=[],
             out_of_scope=[],
         )
+
+    def test_normalize_launch_brief_structured_sections(self):
+        normalized = normalize_launch_brief(
+            source_request="Original request",
+            leader_brief="""
+## Source Request
+User asked for a safe rollout.
+
+## Scoped Brief
+Deliver the smallest safe change.
+
+## Unknowns
+- final prod env
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+""".strip(),
+        )
+
+        assert normalized.format == "structured_sections"
+        assert normalized.sections.source_request == "User asked for a safe rollout."
+        assert normalized.sections.scoped_brief == "Deliver the smallest safe change."
+        assert normalized.sections.unknowns == ["final prod env"]
+        assert normalized.sections.leader_assumptions == ["existing tests are representative"]
+        assert normalized.sections.out_of_scope == ["dashboard rewrite"]
 
     def test_parse_launch_brief_structured_sections(self):
         parsed = parse_launch_brief(
@@ -96,6 +143,7 @@ Deliver the smallest safe change.
         assert "## Unknowns" in rendered
         assert "## Leader Assumptions" in rendered
         assert "## Out of Scope" in rendered
+        assert "## Brief Format\nprose_fallback" in rendered
         assert "## Interpretation Rules" in rendered
         assert "Do not silently convert Unknowns into requirements." in rendered
 
