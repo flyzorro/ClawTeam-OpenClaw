@@ -250,7 +250,7 @@ Deliver the smallest safe change.
         assert "## Brief Format\nprose_fallback" in task_input.description
 
     def test_build_launch_task_input_rejects_unknown_blocked_by_reference(self):
-        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope"):
+        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope") as exc:
             build_launch_task_input(
                 TaskDef(
                     subject="Implement",
@@ -263,8 +263,12 @@ Deliver the smallest safe change.
                 created_task_ids={},
             )
 
+        assert exc.value.task_subject == "Implement"
+        assert exc.value.reference_kind == "blocked_by"
+        assert exc.value.missing_refs == ["MissingScope"]
+
     def test_build_launch_task_input_rejects_unknown_on_fail_reference(self):
-        with pytest.raises(LaunchReferenceError, match="on_fail tasks: MissingImplement"):
+        with pytest.raises(LaunchReferenceError, match="on_fail tasks: MissingImplement") as exc:
             build_launch_task_input(
                 TaskDef(
                     subject="QA",
@@ -276,6 +280,10 @@ Deliver the smallest safe change.
                 team_name="delivery-demo",
                 created_task_ids={},
             )
+
+        assert exc.value.task_subject == "QA"
+        assert exc.value.reference_kind == "on_fail"
+        assert exc.value.missing_refs == ["MissingImplement"]
 
     def test_execute_template_launch_creates_tasks_in_authored_order_and_backfills_ids(self):
         store = _FakeTaskStore()
@@ -317,7 +325,7 @@ Deliver the smallest safe change.
 
         assert issubclass(LaunchReferenceError, LaunchTemplateError)
 
-        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope"):
+        with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope") as exc:
             execute_template_launch(
                 store,
                 [
@@ -332,6 +340,9 @@ Deliver the smallest safe change.
                 team_name="delivery-demo",
             )
 
+        assert exc.value.task_subject == "Implement"
+        assert exc.value.reference_kind == "blocked_by"
+        assert exc.value.missing_refs == ["MissingScope"]
         assert store.calls == []
 
     def test_render_task_brief_wraps_old_prose_into_sections(self):
