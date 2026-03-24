@@ -120,7 +120,6 @@ def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, t
             wake_owner=False,
             message="",
             force=False,
-            caller_path="manual",
         ),
     )
 
@@ -237,7 +236,6 @@ def test_execute_task_update_rejects_missing_execution_id_for_claim_owner(monkey
                 wake_owner=False,
                 message="",
                 force=False,
-                caller_path="worker_runtime",
             ),
         )
     except RuntimeError as exc:
@@ -252,7 +250,7 @@ def test_execute_task_update_rejects_missing_execution_id_for_claim_owner(monkey
 
 
 
-def test_execute_task_update_allows_manual_terminal_update_without_execution_id(monkeypatch, tmp_path):
+def test_execute_task_update_allows_terminal_update_without_execution_id_when_no_active_execution(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -260,7 +258,6 @@ def test_execute_task_update_allows_manual_terminal_update_without_execution_id(
 
     store = TaskStore("demo")
     task = store.create("Implement fix", owner="dev1")
-    store.update(task.id, status=TaskStatus.in_progress, caller="dev1")
 
     result = execute_task_update(
         task_id=task.id,
@@ -290,7 +287,6 @@ def test_execute_task_update_allows_manual_terminal_update_without_execution_id(
             wake_owner=False,
             message="",
             force=False,
-            caller_path="manual",
         ),
     )
 

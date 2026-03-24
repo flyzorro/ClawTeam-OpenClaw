@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from clawteam.services.task_service import wake_tasks_to_pending
 from clawteam.task.transition import (
@@ -28,9 +28,6 @@ TaskUpdateValidationError = TaskTransitionValidationError
 TaskUpdatePlan = TaskTransitionPlan
 merge_update_metadata = merge_transition_metadata
 plan_task_update_followups = plan_task_transition_followups
-
-
-TaskUpdateCallerPath = Literal["worker_runtime", "manual", "legacy"]
 
 
 def plan_task_update(
@@ -81,7 +78,6 @@ class TaskUpdateRequest:
     wake_owner: bool
     message: str
     force: bool
-    caller_path: TaskUpdateCallerPath = "legacy"
 
 
 @dataclass(frozen=True)
@@ -363,7 +359,6 @@ def execute_task_update(
             caller=caller,
             status=request.status,
             execution_id=request.execution_id,
-            caller_path=request.caller_path,
         ) if request.status in (TaskStatus.completed, TaskStatus.failed) else None,
     ) if request.status in (TaskStatus.completed, TaskStatus.failed) else None
     if execution_decision and not execution_decision.accepted:

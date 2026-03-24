@@ -39,7 +39,6 @@ def build_agent_prompt(
         shell_env.append(("CLAWTEAM_DATA_DIR", data_dir))
     if task_execution_id:
         shell_env.append(("CLAWTEAM_TASK_EXECUTION_ID", task_execution_id))
-        shell_env.append(("CLAWTEAM_TASK_UPDATE_CALLER_PATH", "worker_runtime"))
     identity_prefix = " ".join(
         f"{key}={shlex.quote(value)}" for key, value in shell_env
     )

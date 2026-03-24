@@ -948,10 +948,6 @@ def task_update(
         release_notifier=notify_task_release,
         failure_notifier=notify_task_failure,
     )
-    caller_path = os.environ.get("CLAWTEAM_TASK_UPDATE_CALLER_PATH") or None
-    if caller_path not in {"worker_runtime", "manual", "legacy"}:
-        caller_path = "worker_runtime" if os.environ.get("CLAWTEAM_TASK_EXECUTION_ID") else "manual"
-
     request = TaskUpdateRequest(
         status=ts,
         owner=owner,
@@ -967,7 +963,6 @@ def task_update(
         failure_recommended_next_owner=failure_recommended_next_owner,
         failure_recommended_action=failure_recommended_action,
         execution_id=os.environ.get("CLAWTEAM_TASK_EXECUTION_ID") or None,
-        caller_path=caller_path,
         wake_owner=wake_owner,
         message=message or "",
         force=force,
@@ -2127,7 +2122,6 @@ def identity_set(
     team: Optional[str] = typer.Option(None, "--team", help="Team name"),
     data_dir: Optional[str] = typer.Option(None, "--data-dir", help="ClawTeam data dir"),
     task_execution_id: Optional[str] = typer.Option(None, "--task-execution-id", help="Active task execution id"),
-    task_update_caller_path: Optional[str] = typer.Option(None, "--task-update-caller-path", help="Task update caller path (worker_runtime|manual|legacy)"),
     shell: bool = typer.Option(False, "--shell", help="Print pure shell export lines only"),
 ):
     """Print shell export commands to set identity environment variables."""
@@ -2147,9 +2141,6 @@ def identity_set(
     resolved_execution_id = task_execution_id or os.environ.get("CLAWTEAM_TASK_EXECUTION_ID") or None
     if resolved_execution_id:
         lines.append(f"export CLAWTEAM_TASK_EXECUTION_ID={shlex.quote(resolved_execution_id)}")
-    resolved_caller_path = task_update_caller_path or os.environ.get("CLAWTEAM_TASK_UPDATE_CALLER_PATH") or None
-    if resolved_caller_path:
-        lines.append(f"export CLAWTEAM_TASK_UPDATE_CALLER_PATH={shlex.quote(resolved_caller_path)}")
 
     if not lines:
         console.print("[yellow]No options specified. Use --agent-id, --agent-name, --agent-type, --team, --data-dir[/yellow]")

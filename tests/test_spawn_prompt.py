@@ -22,7 +22,7 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     expected_bootstrap = (
         "`eval $(CLAWTEAM_AGENT_NAME='qa one' CLAWTEAM_AGENT_ID=qa-1 "
         "CLAWTEAM_AGENT_TYPE=general-purpose CLAWTEAM_TEAM_NAME='demo team' "
-        "CLAWTEAM_BIN='/tmp/custom bin/clawteam' CLAWTEAM_DATA_DIR='/tmp/clawteam data dir' CLAWTEAM_TASK_EXECUTION_ID=task-123-exec-9 CLAWTEAM_TASK_UPDATE_CALLER_PATH=worker_runtime '/tmp/custom bin/clawteam' identity set "
+        "CLAWTEAM_BIN='/tmp/custom bin/clawteam' CLAWTEAM_DATA_DIR='/tmp/clawteam data dir' CLAWTEAM_TASK_EXECUTION_ID=task-123-exec-9 '/tmp/custom bin/clawteam' identity set "
         "--agent-name 'qa one' --agent-id qa-1 --agent-type general-purpose "
         "--team 'demo team' --data-dir '/tmp/clawteam data dir' --shell)`"
     )
@@ -30,7 +30,6 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert expected_bootstrap in prompt
     assert "'/tmp/custom bin/clawteam' identity set" in prompt
     assert "CLAWTEAM_TASK_EXECUTION_ID=task-123-exec-9" in prompt
-    assert "CLAWTEAM_TASK_UPDATE_CALLER_PATH=worker_runtime" in prompt
     assert "'/tmp/custom bin/clawteam' task update demo team <task-id> --status completed" in prompt
     assert "--shell" in prompt
     assert "--data-dir '/tmp/clawteam data dir'" in prompt
