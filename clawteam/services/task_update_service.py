@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from clawteam.services.task_service import wake_tasks_to_pending
+from clawteam.templates import (
+    ScopeTaskValidationError,
+    inject_resolved_scope_context,
+    validate_scope_task_completion,
+)
 from clawteam.task.transition import (
     ReopenTaskEvent,
     TaskTransitionPlan,
@@ -113,6 +118,34 @@ class TaskUpdateContext:
         return self.repo
 
 
+def _scope_payload(task: TaskItem) -> dict[str, Any] | None:
+    payload = task.metadata.get("resolved_scope")
+    return payload if isinstance(payload, dict) else None
+
+
+def _propagate_resolved_scope_to_targets(
+    *,
+    store: TaskStore,
+    target_ids: list[str],
+    scope_payload: dict[str, Any],
+) -> None:
+    for target_id in target_ids:
+        target = store.get(target_id)
+        if target is None:
+            continue
+        patched_metadata = dict(getattr(target, "metadata", {}) or {})
+        patched_metadata["resolved_scope"] = scope_payload
+        patched_description = inject_resolved_scope_context(
+            description=getattr(target, "description", "") or "",
+            normalized=scope_payload,
+        )
+        store.update(
+            target_id,
+            description=patched_description,
+            metadata=patched_metadata,
+        )
+
+
 def execute_task_update_effects(
     *,
     ctx: TaskUpdateContext,
@@ -124,6 +157,14 @@ def execute_task_update_effects(
     failed_targets_to_wake: list[str],
 ) -> TaskUpdateEffects:
     """Execute post-update side effects after the task store mutation succeeds."""
+    scope_payload = _scope_payload(task)
+    if scope_payload and dependent_ids_to_wake:
+        _propagate_resolved_scope_to_targets(
+            store=ctx.store,
+            target_ids=dependent_ids_to_wake,
+            scope_payload=scope_payload,
+        )
+
     wake = None
     if wake_owner and task.status == TaskStatus.pending and task.owner:
         wake = ctx.runtime.release_to_owner(
@@ -353,6 +394,35 @@ def execute_task_update(
 
     metadata_keys_to_remove: list[str] | None = None
     apply_result: TransitionApplyResult | None = None
+
+    existing_launch_brief = existing.metadata.get("launch_brief") if isinstance(existing.metadata, dict) else None
+    is_scope_task = (existing.metadata.get("template_stage") == "scope") if isinstance(existing.metadata, dict) else False
+    if request.status == TaskStatus.completed and is_scope_task:
+        if not (request.description or "").strip():
+            raise TaskTransitionValidationError(
+                "scope task completion must include the final structured brief via --description before downstream release"
+            )
+        source_request = ""
+        if isinstance(existing_launch_brief, dict):
+            sections = existing_launch_brief.get("sections")
+            if isinstance(sections, dict):
+                source_request = str(sections.get("source_request") or "")
+        try:
+            validated_scope = validate_scope_task_completion(
+                source_request=source_request,
+                leader_brief=request.description or "",
+            )
+        except ScopeTaskValidationError as e:
+            raise TaskTransitionValidationError(str(e)) from e
+        metadata = dict(plan.metadata_to_apply or {})
+        metadata["launch_brief"] = validated_scope.model_dump(mode="json")
+        metadata["resolved_scope"] = validated_scope.model_dump(mode="json")
+        plan = TaskUpdatePlan(
+            metadata_to_apply=metadata,
+            dependent_ids_to_wake=plan.dependent_ids_to_wake,
+            failed_targets_to_wake=plan.failed_targets_to_wake,
+        )
+
     execution_decision = plan_terminal_writeback(
         existing=existing,
         event=TerminalWritebackEvent(

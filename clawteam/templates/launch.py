@@ -24,6 +24,10 @@ class LaunchTaskBuildError(LaunchTemplateError):
     """Raised when launch task input construction fails."""
 
 
+class ScopeTaskValidationError(LaunchTemplateError):
+    """Raised when a scope-task completion payload is missing or invalid."""
+
+
 class LaunchBriefSections(BaseModel):
     version: str = "v1"
     source_request: str = ""
@@ -63,6 +67,56 @@ class TaskLaunchBriefView(BaseModel):
     unknowns: list[str] = Field(default_factory=list)
     leader_assumptions: list[str] = Field(default_factory=list)
     out_of_scope: list[str] = Field(default_factory=list)
+
+
+def validate_scope_task_completion(*, source_request: str, leader_brief: str) -> NormalizedLaunchBrief:
+    normalized = normalize_launch_brief(source_request=source_request, leader_brief=leader_brief)
+    if normalized.format != "structured_sections":
+        raise ScopeTaskValidationError(
+            "Scope task completion must replace the task description with the exact structured sections."
+        )
+    if not normalized.sections.scoped_brief.strip():
+        raise ScopeTaskValidationError("Scope task completion is missing a non-empty Scoped Brief section.")
+    return normalized
+
+
+def _coerce_normalized_launch_brief(value: NormalizedLaunchBrief | dict[str, object]) -> NormalizedLaunchBrief:
+    if isinstance(value, NormalizedLaunchBrief):
+        return value
+    return NormalizedLaunchBrief.model_validate(value)
+
+
+def render_resolved_scope_context(normalized: NormalizedLaunchBrief | dict[str, object]) -> str:
+    normalized = _coerce_normalized_launch_brief(normalized)
+    sections = normalized.sections
+
+    def _bullet_lines(values: list[str]) -> str:
+        return "\n".join(f"- {value}" for value in values) if values else "- none"
+
+    return "\n\n".join(
+        [
+            "## Resolved Scope Context",
+            f"### Source Request\n{sections.source_request or '- none'}",
+            f"### Scoped Brief\n{sections.scoped_brief or '- none'}",
+            f"### Unknowns\n{_bullet_lines(sections.unknowns)}",
+            f"### Leader Assumptions\n{_bullet_lines(sections.leader_assumptions)}",
+            f"### Out of Scope\n{_bullet_lines(sections.out_of_scope)}",
+        ]
+    )
+
+
+def inject_resolved_scope_context(*, description: str, normalized: NormalizedLaunchBrief | dict[str, object]) -> str:
+    normalized = _coerce_normalized_launch_brief(normalized)
+    text = (description or "").strip()
+    marker = "## Resolved Scope Context"
+    task_brief_marker = "## Task Brief"
+    if text.startswith(marker) and task_brief_marker in text:
+        _, _, remainder = text.partition(task_brief_marker)
+        text = remainder.strip()
+    scope_block = render_resolved_scope_context(normalized)
+    if not text:
+        return scope_block
+    return f"{scope_block}\n\n## Task Brief\n{text}"
 
 
 NormalizedLaunchBrief.model_rebuild()
@@ -263,6 +317,8 @@ def build_launch_task_input(
     metadata: dict[str, object] = {}
     if task_def.on_fail:
         metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
+    if task_def.stage:
+        metadata["template_stage"] = task_def.stage.strip().lower()
 
     prepared_brief = prepare_task_launch_brief(
         task_def.description,

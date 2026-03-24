@@ -59,11 +59,15 @@ from .launch import (
     LaunchTemplateError,
     NormalizedLaunchBrief,
     PreparedTaskLaunchBrief,
+    ScopeTaskValidationError,
     TaskLaunchBriefView,
+    inject_resolved_scope_context,
     normalize_launch_brief,
     parse_launch_brief,
     read_launch_brief_metadata,
     read_task_launch_brief,
+    render_resolved_scope_context,
+    validate_scope_task_completion,
 )
 from .launch import build_launch_task_input as _build_launch_task_input
 from .launch import execute_template_launch as _execute_template_launch

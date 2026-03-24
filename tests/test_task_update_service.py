@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from clawteam.runtime.orchestrator import RuntimeOrchestrator
 from clawteam.services.task_update_service import (
     TaskUpdateContext,
@@ -9,6 +11,7 @@ from clawteam.services.task_update_service import (
     TaskUpdatePlan,
     TaskUpdateRequest,
     TaskUpdateResult,
+    TaskUpdateValidationError,
     execute_task_update,
     execute_task_update_effects,
 )
@@ -561,3 +564,229 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
     assert effects.failure_notice["failureNotice"] == "sent"
     assert effects.failure_notice["failureLeader"] == "leader"
     assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
+
+
+def test_execute_task_update_rejects_scope_completion_without_structured_description(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    store = TaskStore("demo")
+    scope = store.create(
+        "Scope the task into a minimal deliverable",
+        owner="leader",
+        metadata={
+            "template_stage": "scope",
+            "launch_brief": {
+                "format": "structured_sections",
+                "sections": {
+                    "source_request": "Ship the feature safely",
+                    "scoped_brief": "",
+                    "unknowns": [],
+                    "leader_assumptions": [],
+                    "out_of_scope": [],
+                },
+            },
+        },
+    )
+
+    with pytest.raises(TaskUpdateValidationError, match="scope task completion must include the final structured brief"):
+        execute_task_update(
+            task_id=scope.id,
+            caller="leader",
+            ctx=TaskUpdateContext(
+                store=store,
+                team="demo",
+                runtime=RuntimeOrchestrator(team="demo"),
+                release_notifier=lambda team, task, caller, message: None,
+                failure_notifier=lambda team, task, caller: None,
+            ),
+            request=TaskUpdateRequest(
+                status=TaskStatus.completed,
+                owner=None,
+                subject=None,
+                description=None,
+                add_blocks=None,
+                add_blocked_by=None,
+                add_on_fail=None,
+                failure_kind=None,
+                failure_note=None,
+                failure_root_cause=None,
+                failure_evidence=None,
+                failure_recommended_next_owner=None,
+                failure_recommended_action=None,
+                execution_id=None,
+                wake_owner=False,
+                message="",
+                force=False,
+            ),
+        )
+
+
+def test_execute_task_update_rejects_malformed_scope_completion_as_task_validation(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    store = TaskStore("demo")
+    scope = store.create(
+        "Scope the task into a minimal deliverable",
+        owner="leader",
+        metadata={
+            "template_stage": "scope",
+            "launch_brief": {
+                "format": "structured_sections",
+                "sections": {
+                    "source_request": "Ship the feature safely",
+                    "scoped_brief": "",
+                    "unknowns": [],
+                    "leader_assumptions": [],
+                    "out_of_scope": [],
+                },
+            },
+        },
+    )
+
+    malformed_description = """## Source Request
+Ship the feature safely
+
+## Unknowns
+- none
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+"""
+
+    with pytest.raises(TaskUpdateValidationError, match="missing a non-empty Scoped Brief"):
+        execute_task_update(
+            task_id=scope.id,
+            caller="leader",
+            ctx=TaskUpdateContext(
+                store=store,
+                team="demo",
+                runtime=RuntimeOrchestrator(team="demo"),
+                release_notifier=lambda team, task, caller, message: None,
+                failure_notifier=lambda team, task, caller: None,
+            ),
+            request=TaskUpdateRequest(
+                status=TaskStatus.completed,
+                owner=None,
+                subject=None,
+                description=malformed_description,
+                add_blocks=None,
+                add_blocked_by=None,
+                add_on_fail=None,
+                failure_kind=None,
+                failure_note=None,
+                failure_root_cause=None,
+                failure_evidence=None,
+                failure_recommended_next_owner=None,
+                failure_recommended_action=None,
+                execution_id=None,
+                wake_owner=False,
+                message="",
+                force=False,
+            ),
+        )
+
+
+def test_execute_task_update_propagates_validated_scope_to_unblocked_tasks(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "config1", "config1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    scope = store.create(
+        "Scope the task into a minimal deliverable",
+        owner="leader",
+        metadata={
+            "template_stage": "scope",
+            "launch_brief": {
+                "format": "structured_sections",
+                "sections": {
+                    "source_request": "Ship the feature safely",
+                    "scoped_brief": "Initial scope",
+                    "unknowns": [],
+                    "leader_assumptions": [],
+                    "out_of_scope": [],
+                },
+            },
+        },
+    )
+    setup = store.create(
+        "Prepare repo, branch, env, and runnable baseline",
+        owner="config1",
+        blocked_by=[scope.id],
+        metadata={"template_stage": "setup"},
+        description="Original setup brief",
+    )
+
+    captured_messages = []
+
+    monkeypatch.setattr(
+        "clawteam.services.task_update_service.wake_tasks_to_pending",
+        lambda team, target_ids, caller, message_builder, repo, store, runtime, release_notifier: [
+            {"taskId": target_ids[0], "message": message_builder(store.get(target_ids[0]))}
+        ],
+    )
+
+    result = execute_task_update(
+        task_id=scope.id,
+        caller="leader",
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: captured_messages.append(message) or {"messageSent": True, "message": message},
+            failure_notifier=lambda team, task, caller: None,
+        ),
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description="""## Source Request
+Ship the feature safely
+
+## Scoped Brief
+Deliver only the minimal safe fix.
+
+## Unknowns
+- none
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+
+## Risks/Blockers
+- none
+
+## Recommended Next Step
+- setup
+""",
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            execution_id=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
+
+    updated_setup = store.get(setup.id)
+    assert result.task.metadata["resolved_scope"]["sections"]["scoped_brief"] == "Deliver only the minimal safe fix."
+    assert updated_setup is not None
+    assert updated_setup.status == TaskStatus.pending
+    assert updated_setup.metadata["resolved_scope"]["sections"]["source_request"] == "Ship the feature safely"
+    assert "## Resolved Scope Context" in updated_setup.description
+    assert "Deliver only the minimal safe fix." in updated_setup.description
