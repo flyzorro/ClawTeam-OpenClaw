@@ -585,7 +585,7 @@ def test_task_failed_auto_notifies_and_respawns_reopened_owner(monkeypatch, tmp_
 
     impl_after = TaskStore("demo").get(impl.id)
     assert impl_after.status.value == "pending"
-    assert qa.id in impl_after.blocked_by
+    assert impl_after.blocked_by == []
 
     inbox = MailboxManager("demo")
     messages = inbox.peek("dev1")

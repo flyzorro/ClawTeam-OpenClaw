@@ -714,7 +714,5 @@ class TaskStore:
             target.status = TaskStatus.pending
             target.locked_by = ""
             target.locked_at = ""
-            if failed_task.id not in target.blocked_by:
-                target.blocked_by.append(failed_task.id)
             target.updated_at = _now_iso()
             self._save_unlocked(target)

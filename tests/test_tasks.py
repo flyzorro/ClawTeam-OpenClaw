@@ -188,7 +188,7 @@ class TestDependencyResolution:
 
         impl_after = store.get(impl.id)
         assert impl_after.status == TaskStatus.pending
-        assert qa.id in impl_after.blocked_by
+        assert impl_after.blocked_by == []
 
     def test_failed_task_does_not_reopen_on_fail_targets_before_it_actually_starts(self, store):
         impl = store.create("implement")

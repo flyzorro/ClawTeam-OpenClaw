@@ -430,6 +430,61 @@ def test_task_store_reopen_clears_active_execution(monkeypatch, tmp_path):
 
 
 
+def test_regular_failback_reopens_owner_without_reblocking_terminal_writeback(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    store = TaskStore("demo")
+
+    impl = store.create(subject="Implement fix", description="Real task", owner="dev1")
+    qa = store.create(
+        subject="Regression QA",
+        description="Verify the fix",
+        owner="qa1",
+        blocked_by=[impl.id],
+        metadata={"on_fail": [impl.id]},
+    )
+
+    impl_claim = store.claim_execution(impl.id, caller="dev1")
+    assert impl_claim is not None
+    impl_done = store.accept_terminal_writeback(
+        impl.id,
+        status=TaskStatus.completed,
+        caller="dev1",
+        execution_id=impl_claim.task.active_execution_id,
+    )
+    assert impl_done is not None
+    assert impl_done.task.status == TaskStatus.completed
+
+    qa_claim = store.claim_execution(qa.id, caller="qa1")
+    assert qa_claim is not None
+    qa_failed = store.accept_terminal_writeback(
+        qa.id,
+        status=TaskStatus.failed,
+        caller="qa1",
+        execution_id=qa_claim.task.active_execution_id,
+        metadata={"failure_kind": "regular"},
+    )
+    assert qa_failed is not None
+    assert qa_failed.task.status == TaskStatus.failed
+
+    impl_reopened = store.get(impl.id)
+    assert impl_reopened is not None
+    assert impl_reopened.status == TaskStatus.pending
+    assert impl_reopened.blocked_by == []
+
+    impl_reclaim = store.claim_execution(impl.id, caller="dev1")
+    assert impl_reclaim is not None
+    impl_redone = store.accept_terminal_writeback(
+        impl.id,
+        status=TaskStatus.completed,
+        caller="dev1",
+        execution_id=impl_reclaim.task.active_execution_id,
+    )
+    assert impl_redone is not None
+    assert impl_redone.case_name == "execution_scoped_terminal_writeback"
+    assert impl_redone.task.status == TaskStatus.completed
+
+
+
 def test_task_store_claim_execution_rejects_in_progress_snapshot_under_lock(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     store = TaskStore("demo")
