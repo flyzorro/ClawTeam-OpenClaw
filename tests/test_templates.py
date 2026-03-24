@@ -222,6 +222,34 @@ Deliver the smallest safe change.
         assert "## Source Request" in task_input.description
         assert "## Brief Format\nprose_fallback" in task_input.description
 
+    def test_build_launch_task_input_rejects_unknown_blocked_by_reference(self):
+        with pytest.raises(ValueError, match="blocked_by tasks: MissingScope"):
+            build_launch_task_input(
+                TaskDef(
+                    subject="Implement",
+                    description="Clarify {goal} into a minimal deliverable.",
+                    owner="dev1",
+                    blocked_by=["MissingScope"],
+                ),
+                goal="Ship the feature safely",
+                team_name="delivery-demo",
+                created_task_ids={},
+            )
+
+    def test_build_launch_task_input_rejects_unknown_on_fail_reference(self):
+        with pytest.raises(ValueError, match="on_fail tasks: MissingImplement"):
+            build_launch_task_input(
+                TaskDef(
+                    subject="QA",
+                    description="Validate the deliverable.",
+                    owner="qa1",
+                    on_fail=["MissingImplement"],
+                ),
+                goal="Ship the feature safely",
+                team_name="delivery-demo",
+                created_task_ids={},
+            )
+
     def test_render_task_brief_wraps_old_prose_into_sections(self):
         rendered = render_task_brief(
             "Goal:\nClarify {goal} into a minimal deliverable.",
