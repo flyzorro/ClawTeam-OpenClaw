@@ -81,12 +81,13 @@ _NO_INVENTION_ENTITY_PATTERNS: dict[str, tuple[str, ...]] = {
     "deliverable": (r"\bdeliverable(?:s)?\b",),
 }
 
-_TIGHTENING_REQUIREMENT_PATTERNS: dict[str, tuple[str, ...]] = {
+_TIGHTENING_HARD_REQUIREMENT_PATTERNS: dict[str, tuple[str, ...]] = {
     "must": (r"\bmust\b",),
     "required": (r"\brequired\b",),
     "mandatory": (r"\bmandatory\b",),
-    "ensure": (r"\bensure\b",),
-    "guarantee": (r"\bguarantee\b",),
+}
+
+_TIGHTENING_ACCEPTANCE_PATTERNS: dict[str, tuple[str, ...]] = {
     "production-ready": (r"\bproduction[-\s]ready\b",),
     "full-coverage": (r"\bfull\s+coverage\b",),
     "all-cases": (r"\ball\s+cases\b",),
@@ -142,11 +143,19 @@ def find_scope_inventions(*, source_request: str, scoped_brief: str) -> list[str
 
 
 def find_scope_tightening(*, source_request: str, scoped_brief: str) -> list[str]:
-    tightenings: list[str] = []
-    for label, patterns in _TIGHTENING_REQUIREMENT_PATTERNS.items():
-        if _matches_any_pattern(scoped_brief, patterns) and not _matches_any_pattern(source_request, patterns):
-            tightenings.append(label)
-    return tightenings
+    hard_requirement_labels = [
+        label
+        for label, patterns in _TIGHTENING_HARD_REQUIREMENT_PATTERNS.items()
+        if _matches_any_pattern(scoped_brief, patterns) and not _matches_any_pattern(source_request, patterns)
+    ]
+    acceptance_labels = [
+        label
+        for label, patterns in _TIGHTENING_ACCEPTANCE_PATTERNS.items()
+        if _matches_any_pattern(scoped_brief, patterns) and not _matches_any_pattern(source_request, patterns)
+    ]
+    if not hard_requirement_labels or not acceptance_labels:
+        return []
+    return hard_requirement_labels + acceptance_labels
 
 
 def validate_scope_task_completion(*, source_request: str, leader_brief: str) -> NormalizedLaunchBrief:
