@@ -18,7 +18,7 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.delivery.release_notifier import notify_task_release
-from clawteam.templates import execute_template_launch, render_task
+from clawteam.templates import LaunchTemplateError, execute_template_launch, render_task
 from clawteam.services import (
     RuntimeOrchestrator,
     TaskReleaseContext,
@@ -2585,7 +2585,7 @@ def launch_team(
             goal=goal,
             team_name=t_name,
         )
-    except ValueError as e:
+    except LaunchTemplateError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
