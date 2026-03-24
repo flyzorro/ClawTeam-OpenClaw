@@ -18,6 +18,7 @@ from clawteam.templates import (
     _SafeDict,
     build_launch_task_input,
     execute_template_launch,
+    find_scope_inventions,
     list_templates,
     load_template,
     normalize_launch_brief,
@@ -185,6 +186,54 @@ Deliver the smallest safe change.
         assert parsed.unknowns == ["final prod env"]
         assert parsed.leader_assumptions == ["existing tests are representative"]
         assert parsed.out_of_scope == ["dashboard rewrite"]
+
+    def test_find_scope_inventions_flags_explicit_additive_entities_missing_from_source_request(self):
+        inventions = find_scope_inventions(
+            source_request="Add a small UI polish to the member list.",
+            scoped_brief="Add a new API endpoint and schema for member list data.",
+        )
+
+        assert inventions == ["endpoint", "api", "schema"]
+
+    def test_find_scope_inventions_requires_new_to_attach_to_risky_entity(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Document new acceptance notes for the existing member list behavior.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_allows_entities_when_already_in_source_request(self):
+        inventions = find_scope_inventions(
+            source_request="Add a new API endpoint for member list data.",
+            scoped_brief="Implement the API endpoint and validate the response.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_does_not_treat_new_vocabulary_alone_as_invention(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Clarify the API behavior used by the current member list UI.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_ignores_negated_additive_language(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Clarify the API behavior used by the current member list UI without adding new endpoints.",
+        )
+
+        assert inventions == []
+
+    def test_find_scope_inventions_accepts_bare_new_without_risky_entity_phrase(self):
+        inventions = find_scope_inventions(
+            source_request="Polish the member list UI.",
+            scoped_brief="Clarify the current flow and note new context for reviewers.",
+        )
+
+        assert inventions == []
 
     def test_prepare_task_launch_brief_is_single_entrypoint(self):
         prepared = prepare_task_launch_brief(

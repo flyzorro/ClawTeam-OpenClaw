@@ -61,6 +61,7 @@ from .launch import (
     PreparedTaskLaunchBrief,
     ScopeTaskValidationError,
     TaskLaunchBriefView,
+    find_scope_inventions,
     inject_resolved_scope_context,
     normalize_launch_brief,
     parse_launch_brief,

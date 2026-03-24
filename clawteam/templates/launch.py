@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field
 
 
@@ -69,6 +71,63 @@ class TaskLaunchBriefView(BaseModel):
     out_of_scope: list[str] = Field(default_factory=list)
 
 
+_NO_INVENTION_ENTITY_PATTERNS: dict[str, tuple[str, ...]] = {
+    "endpoint": (r"\bendpoint(?:s)?\b", r"\broute(?:s)?\b"),
+    "api": (r"\bapi(?:s)?\b",),
+    "schema": (r"\bschema(?:s)?\b",),
+    "page": (r"\bpage(?:s)?\b",),
+    "tab": (r"\btab(?:s)?\b",),
+    "workflow": (r"\bworkflow(?:s)?\b",),
+    "deliverable": (r"\bdeliverable(?:s)?\b",),
+}
+
+# Hard-fail only on explicit additive intent, not merely on new vocabulary.
+_STRONG_ADDITIVE_INTENT_PATTERNS: tuple[str, ...] = (
+    r"\badd\b",
+    r"\bcreate\b",
+    r"\bintroduce\b",
+)
+
+_NEGATED_ADDITIVE_PATTERNS: tuple[str, ...] = (
+    r"\bwithout\s+adding\b",
+    r"\bwithout\s+creating\b",
+    r"\bwithout\s+introducing\b",
+    r"\bno\s+new\b",
+    r"\bnot\s+add(?:ing)?\b",
+    r"\bnot\s+create(?:ing)?\b",
+    r"\bnot\s+introduc(?:e|ing)\b",
+)
+
+
+def _matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _has_positive_additive_intent(text: str, entity_patterns: tuple[str, ...]) -> bool:
+    if _matches_any_pattern(text, _NEGATED_ADDITIVE_PATTERNS):
+        return False
+    if _matches_any_pattern(text, _STRONG_ADDITIVE_INTENT_PATTERNS):
+        return True
+    new_with_entity_patterns = tuple(rf"\bnew\s+{pattern.lstrip('\\b')}" for pattern in entity_patterns)
+    if _matches_any_pattern(text, new_with_entity_patterns):
+        return True
+    action_with_new_entity_patterns = tuple(
+        rf"\b(?:add|create|introduce)(?:\s+\w+){{0,3}}\s+new\s+{pattern.lstrip('\\b')}"
+        for pattern in entity_patterns
+    )
+    return _matches_any_pattern(text, action_with_new_entity_patterns)
+
+
+def find_scope_inventions(*, source_request: str, scoped_brief: str) -> list[str]:
+    inventions: list[str] = []
+    for label, patterns in _NO_INVENTION_ENTITY_PATTERNS.items():
+        if not _has_positive_additive_intent(scoped_brief, patterns):
+            continue
+        if _matches_any_pattern(scoped_brief, patterns) and not _matches_any_pattern(source_request, patterns):
+            inventions.append(label)
+    return inventions
+
+
 def validate_scope_task_completion(*, source_request: str, leader_brief: str) -> NormalizedLaunchBrief:
     normalized = normalize_launch_brief(source_request=source_request, leader_brief=leader_brief)
     if normalized.format != "structured_sections":
@@ -77,6 +136,15 @@ def validate_scope_task_completion(*, source_request: str, leader_brief: str) ->
         )
     if not normalized.sections.scoped_brief.strip():
         raise ScopeTaskValidationError("Scope task completion is missing a non-empty Scoped Brief section.")
+    invented_entities = find_scope_inventions(
+        source_request=source_request,
+        scoped_brief=normalized.sections.scoped_brief,
+    )
+    if invented_entities:
+        raise ScopeTaskValidationError(
+            "Scope task completion invents new scope entities not present in the source request: "
+            + ", ".join(invented_entities)
+        )
     return normalized
 
 
