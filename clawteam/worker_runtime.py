@@ -363,6 +363,7 @@ def _fail_claimed_task(
                 caller=agent_name,
                 status=TaskStatus.failed,
                 execution_id=execution_id,
+                runtime_path=True,
             ),
         )
         if decision and not decision.accepted:

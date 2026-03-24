@@ -197,7 +197,7 @@ def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure(m
 
 
 
-def test_execute_task_update_rejects_missing_execution_id_for_claim_owner(monkeypatch, tmp_path):
+def test_execute_task_update_allows_missing_execution_id_for_manual_claim_owner(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -207,46 +207,40 @@ def test_execute_task_update_rejects_missing_execution_id_for_claim_owner(monkey
     task = store.create("Implement fix", owner="dev1")
     store.update(task.id, status=TaskStatus.in_progress, caller="dev1")
 
-    try:
-        execute_task_update(
-            task_id=task.id,
-            caller="dev1",
-            ctx=TaskUpdateContext(
-                store=store,
-                team="demo",
-                runtime=RuntimeOrchestrator(team="demo"),
-                release_notifier=lambda team, task, caller, message: None,
-                failure_notifier=lambda team, task, caller: None,
-            ),
-            request=TaskUpdateRequest(
-                status=TaskStatus.completed,
-                owner=None,
-                subject=None,
-                description=None,
-                add_blocks=None,
-                add_blocked_by=None,
-                add_on_fail=None,
-                failure_kind=None,
-                failure_note=None,
-                failure_root_cause=None,
-                failure_evidence=None,
-                failure_recommended_next_owner=None,
-                failure_recommended_action=None,
-                execution_id=None,
-                wake_owner=False,
-                message="",
-                force=False,
-            ),
-        )
-    except RuntimeError as exc:
-        assert "missing_execution_id" in str(exc)
-    else:
-        raise AssertionError("expected missing execution id writeback to be rejected")
+    result = execute_task_update(
+        task_id=task.id,
+        caller="dev1",
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: None,
+            failure_notifier=lambda team, task, caller: None,
+        ),
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description=None,
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            execution_id=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
 
-    rejected = store.get(task.id)
-    assert rejected is not None
-    assert rejected.status == TaskStatus.in_progress
-    assert rejected.metadata["transition_log"][-1]["rejectionReason"] == "missing_execution_id"
+    assert result.task.status == TaskStatus.completed
+    assert result.apply_result is not None
+    assert result.apply_result.case_name == "terminal_writeback_without_execution_scope"
 
 
 

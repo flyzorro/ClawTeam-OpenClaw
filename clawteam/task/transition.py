@@ -64,6 +64,7 @@ class TerminalWritebackEvent:
     caller: str
     status: TaskStatus
     execution_id: str | None = None
+    runtime_path: bool = False
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,7 @@ def plan_execution_scoped_terminal_writeback(
     caller: str,
     requested_status: TaskStatus | None,
     execution_id: str | None,
+    runtime_path: bool = False,
 ) -> TaskTransitionDecision | None:
     if requested_status not in (TaskStatus.completed, TaskStatus.failed):
         return None
@@ -223,7 +225,7 @@ def plan_execution_scoped_terminal_writeback(
             rejection_reason="task_still_blocked",
         )
     if not execution_id:
-        if existing.active_execution_id:
+        if runtime_path:
             return TaskTransitionDecision(
                 accepted=False,
                 case_name=EXECUTION_TERMINAL_CASE,
@@ -275,6 +277,7 @@ def plan_terminal_writeback(
         caller=event.caller,
         requested_status=event.status,
         execution_id=event.execution_id,
+        runtime_path=event.runtime_path,
     )
 
 
