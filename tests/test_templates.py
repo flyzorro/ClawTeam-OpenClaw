@@ -7,11 +7,13 @@ from clawteam.templates import (
     LaunchBriefSections,
     LaunchExecutionResult,
     LaunchReferenceError,
+    LaunchTaskBuildError,
     LaunchTaskInput,
     LaunchTemplateError,
     NormalizedLaunchBrief,
     PreparedTaskLaunchBrief,
     TaskDef,
+    TaskLaunchBriefView,
     TemplateDef,
     _SafeDict,
     build_launch_task_input,
@@ -21,6 +23,8 @@ from clawteam.templates import (
     normalize_launch_brief,
     parse_launch_brief,
     prepare_task_launch_brief,
+    read_launch_brief_metadata,
+    read_task_launch_brief,
     render_task,
     render_task_brief,
     resolve_template_topology,
@@ -52,6 +56,12 @@ class TestRenderTask:
 class _FakeCreatedTask:
     def __init__(self, task_id: str):
         self.id = task_id
+
+
+class _FakeTask:
+    def __init__(self, *, description: str = "", metadata: dict[str, object] | None = None):
+        self.description = description
+        self.metadata = metadata or {}
 
 
 class _FakeTaskStore:
@@ -344,6 +354,77 @@ Deliver the smallest safe change.
         assert exc.value.reference_kind == "blocked_by"
         assert exc.value.missing_refs == ["MissingScope"]
         assert store.calls == []
+
+    def test_read_launch_brief_metadata_returns_normalized_contract(self):
+        normalized = read_launch_brief_metadata(
+            {
+                "launch_brief": {
+                    "format": "structured_sections",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Implement only the minimal flow.",
+                        "unknowns": ["Final API timeout"],
+                        "leader_assumptions": ["Existing auth can be reused"],
+                        "out_of_scope": ["Billing redesign"],
+                    },
+                }
+            }
+        )
+
+        assert normalized == NormalizedLaunchBrief(
+            format="structured_sections",
+            sections=LaunchBriefSections(
+                source_request="Ship the feature safely",
+                scoped_brief="Implement only the minimal flow.",
+                unknowns=["Final API timeout"],
+                leader_assumptions=["Existing auth can be reused"],
+                out_of_scope=["Billing redesign"],
+            ),
+        )
+
+    def test_read_task_launch_brief_prefers_metadata_contract(self):
+        task = _FakeTask(
+            description="## Source Request\nWRONG\n\n## Scoped Brief\nWRONG",
+            metadata={
+                "launch_brief": {
+                    "format": "prose_fallback",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Implement only the minimal flow.",
+                        "unknowns": [],
+                        "leader_assumptions": ["Existing auth can be reused"],
+                        "out_of_scope": ["Billing redesign"],
+                    },
+                }
+            },
+        )
+
+        assert read_task_launch_brief(task) == TaskLaunchBriefView(
+            format="prose_fallback",
+            source_request="Ship the feature safely",
+            scoped_brief="Implement only the minimal flow.",
+            unknowns=[],
+            leader_assumptions=["Existing auth can be reused"],
+            out_of_scope=["Billing redesign"],
+        )
+
+    def test_read_task_launch_brief_does_not_parse_description_without_metadata(self):
+        task = _FakeTask(
+            description=(
+                "## Source Request\nWrong source\n\n"
+                "## Scoped Brief\nWrong scope\n\n"
+                "## Unknowns\n- Wrong unknown"
+            ),
+            metadata={},
+        )
+
+        assert read_task_launch_brief(task) is None
+
+    def test_read_launch_brief_metadata_rejects_non_mapping_contract(self):
+        with pytest.raises(LaunchTaskBuildError, match="launch_brief metadata must be a mapping"):
+            read_launch_brief_metadata({"launch_brief": "not-a-mapping"})
 
     def test_render_task_brief_wraps_old_prose_into_sections(self):
         rendered = render_task_brief(
