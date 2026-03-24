@@ -6,6 +6,7 @@ from clawteam.templates import (
     AgentDef,
     LaunchBriefSections,
     NormalizedLaunchBrief,
+    PreparedTaskLaunchBrief,
     TaskDef,
     TemplateDef,
     _SafeDict,
@@ -13,6 +14,7 @@ from clawteam.templates import (
     load_template,
     normalize_launch_brief,
     parse_launch_brief,
+    prepare_task_launch_brief,
     render_task,
     render_task_brief,
     resolve_template_topology,
@@ -73,6 +75,23 @@ class TestLaunchBrief:
             out_of_scope=[],
         )
 
+    def test_normalize_launch_brief_empty(self):
+        normalized = normalize_launch_brief(
+            source_request="Original request",
+            leader_brief="   ",
+        )
+
+        assert normalized == NormalizedLaunchBrief(
+            format="empty",
+            sections=LaunchBriefSections(
+                source_request="Original request",
+                scoped_brief="",
+                unknowns=[],
+                leader_assumptions=[],
+                out_of_scope=[],
+            ),
+        )
+
     def test_normalize_launch_brief_structured_sections(self):
         normalized = normalize_launch_brief(
             source_request="Original request",
@@ -127,6 +146,42 @@ Deliver the smallest safe change.
         assert parsed.unknowns == ["final prod env"]
         assert parsed.leader_assumptions == ["existing tests are representative"]
         assert parsed.out_of_scope == ["dashboard rewrite"]
+
+    def test_prepare_task_launch_brief_is_single_entrypoint(self):
+        prepared = prepare_task_launch_brief(
+            "Goal:\nClarify {goal} into a minimal deliverable.",
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            agent_name="leader",
+        )
+
+        assert prepared == PreparedTaskLaunchBrief(
+            rendered_description=prepared.rendered_description,
+            normalized_brief=NormalizedLaunchBrief(
+                format="prose_fallback",
+                sections=LaunchBriefSections(
+                    source_request="Ship the feature safely",
+                    scoped_brief="Goal:\nClarify Ship the feature safely into a minimal deliverable.",
+                    unknowns=[],
+                    leader_assumptions=[],
+                    out_of_scope=[],
+                ),
+            ),
+            metadata_patch={
+                "launch_brief": {
+                    "format": "prose_fallback",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Goal:\nClarify Ship the feature safely into a minimal deliverable.",
+                        "unknowns": [],
+                        "leader_assumptions": [],
+                        "out_of_scope": [],
+                    },
+                }
+            },
+        )
+        assert "## Brief Format\nprose_fallback" in prepared.rendered_description
 
     def test_render_task_brief_wraps_old_prose_into_sections(self):
         rendered = render_task_brief(
