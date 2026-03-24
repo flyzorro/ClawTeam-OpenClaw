@@ -82,7 +82,10 @@ def test_launch_template_creates_blocked_by_chain(monkeypatch, tmp_path):
         assert "## Unknowns" in task.description
         assert "## Leader Assumptions" in task.description
         assert "## Out of Scope" in task.description
+        assert "## Brief Format" in task.description
         assert "## Interpretation Rules" in task.description
+        assert task.metadata.get("launch_brief", {}).get("format") in {"structured_sections", "prose_fallback", "empty"}
+        assert task.metadata.get("launch_brief", {}).get("sections", {}).get("source_request") == "Ship the feature safely"
 
     assert scope.status.value == "pending"
     assert setup.status.value == "blocked"
