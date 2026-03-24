@@ -445,6 +445,51 @@ def test_task_store_claim_execution_rejects_in_progress_snapshot_under_lock(monk
 
 
 
+def test_task_store_runtime_terminal_writeback_rejects_missing_execution_id(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    store = TaskStore("demo")
+    task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    store.claim_execution(task.id, caller="qa1")
+
+    decision, rejected_task, apply_result = store.apply_runtime_terminal_writeback(
+        task.id,
+        status=TaskStatus.completed,
+        caller="qa1",
+        execution_id=None,
+    )
+
+    assert apply_result is None
+    assert decision is not None
+    assert decision.accepted is False
+    assert decision.rejection_reason == "missing_execution_id"
+    assert rejected_task is not None
+    assert rejected_task.status == TaskStatus.in_progress
+    assert rejected_task.metadata["transition_log"][-1]["rejectionReason"] == "missing_execution_id"
+
+
+
+def test_task_store_runtime_terminal_writeback_accepts_matching_execution(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    store = TaskStore("demo")
+    task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    claimed = store.claim_execution(task.id, caller="qa1")
+
+    decision, rejected_task, apply_result = store.apply_runtime_terminal_writeback(
+        task.id,
+        status=TaskStatus.completed,
+        caller="qa1",
+        execution_id=claimed.task.active_execution_id,
+    )
+
+    assert rejected_task is None
+    assert decision is not None
+    assert decision.accepted is True
+    assert apply_result is not None
+    assert apply_result.case_name == "execution_scoped_terminal_writeback"
+    assert apply_result.task.status == TaskStatus.completed
+
+
+
 def test_task_store_rejects_duplicate_same_status_terminal_writeback(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     store = TaskStore("demo")
@@ -591,6 +636,49 @@ def test_run_worker_iteration_reports_duplicate_terminal_for_conflicting_termina
     assert updated.status.value == "completed"
     assert updated.metadata["transition_log"][-1]["accepted"] is False
     assert updated.metadata["transition_log"][-1]["rejectionReason"] == "duplicate_terminal_conflicting_status"
+
+
+def test_run_worker_iteration_recovers_terminal_writeback_from_transcript_result_block(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    mailbox = MailboxManager("demo")
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    mailbox.send("leader", "qa1", "start now", key=f"task-wake:{task.id}", last_task=task.id)
+
+    transcript_dir = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    (transcript_dir / "clawteam-demo-qa1.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","content":"DEV_RESULT\nstatus: completed\nsummary: done\nchanged_files:\n- foo\nvalidation:\n- pytest ok\nknown_issues:\n- none\nnext_action: handoff to qa"}}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(worker_runtime, "_run_agent_with_progress_watchdog", lambda *args, **kwargs: _Completed(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(
+        worker_runtime,
+        "_wait_for_post_exit_settle",
+        lambda **kwargs: (TaskStore("demo").get(task.id), False),
+    )
+
+    result = run_worker_iteration(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert result["status"] == "recovered_terminal"
+    assert result["taskId"] == task.id
+    assert result["recoveredStatus"] == "completed"
+    assert result["recoveredFrom"] == "DEV_RESULT"
+
+    updated = TaskStore("demo").get(task.id)
+    assert updated is not None
+    assert updated.status.value == "completed"
+    assert updated.locked_by == ""
+    assert updated.metadata["runtime_terminal_recovery"] == "transcript_result_block"
+    assert updated.metadata["runtime_terminal_recovery_result_block"] == "DEV_RESULT"
+    assert updated.metadata["runtime_terminal_recovery_result_value"] == "completed"
+    assert updated.last_terminal_status == "completed"
+
 
 
 def test_run_worker_iteration_fails_closed_when_agent_returns_success_without_terminal_task_update(monkeypatch, tmp_path):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -14,7 +16,6 @@ from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
-    plan_runtime_terminal_writeback,
 )
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
@@ -238,6 +239,85 @@ def _transcript_progress_marker(session_key: str) -> tuple[int, int]:
         return (0, 0)
 
 
+def _extract_text_from_transcript_line(line: str) -> str:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return line
+
+    parts: list[str] = []
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, str):
+            if value:
+                parts.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk(item)
+            return
+        if isinstance(value, dict):
+            content = value.get("content")
+            if isinstance(content, str):
+                if content:
+                    parts.append(content)
+            elif isinstance(content, list):
+                _walk(content)
+            text = value.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+            message = value.get("message")
+            if message is not None:
+                _walk(message)
+
+    _walk(payload)
+    return "\n".join(part for part in parts if part).strip() or line
+
+
+_RESULT_BLOCK_PATTERNS: list[tuple[str, re.Pattern[str], dict[str, TaskStatus]]] = [
+    (
+        "DEV_RESULT",
+        re.compile(
+            r"DEV_RESULT\s+status:\s*(?P<status>completed|blocked)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"completed": TaskStatus.completed, "blocked": TaskStatus.failed},
+    ),
+    (
+        "QA_RESULT",
+        re.compile(
+            r"QA_RESULT\s+status:\s*(?P<status>pass|fail|blocked)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"pass": TaskStatus.completed, "fail": TaskStatus.failed, "blocked": TaskStatus.failed},
+    ),
+    (
+        "REVIEW_RESULT",
+        re.compile(
+            r"REVIEW_RESULT\s+decision:\s*(?P<status>approve|return_to_implement)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"approve": TaskStatus.completed, "return_to_implement": TaskStatus.failed},
+    ),
+]
+
+
+def _infer_terminal_status_from_transcript_tail(transcript_tail: str) -> tuple[TaskStatus, str, str] | None:
+    normalized = "\n".join(
+        part for part in (_extract_text_from_transcript_line(line) for line in transcript_tail.splitlines()) if part
+    )
+    for block_name, pattern, status_map in _RESULT_BLOCK_PATTERNS:
+        match = pattern.search(normalized)
+        if not match:
+            continue
+        raw_status = str(match.group("status") or "").strip().lower()
+        inferred = status_map.get(raw_status)
+        if inferred is None:
+            continue
+        return inferred, block_name, raw_status
+    return None
+
+
 def _run_agent_with_progress_watchdog(
     *,
     command: list[str],
@@ -328,53 +408,6 @@ def _wait_for_post_exit_settle(
         time.sleep(max(poll_interval_seconds, 0.05))
 
 
-def _apply_runtime_terminal_writeback(
-    *,
-    store: TaskStore,
-    task_id: str,
-    caller: str,
-    status: TaskStatus,
-    execution_id: str | None,
-    metadata: dict[str, Any] | None = None,
-    fallback_case_name: str = "worker_runtime_failed_closed",
-) -> tuple[TaskTransitionDecision | None, Any | None, Any | None]:
-    existing = store.get(task_id)
-    task = None
-    apply_result = None
-    if existing is None:
-        return None, task, apply_result
-
-    decision = plan_runtime_terminal_writeback(
-        existing=existing,
-        caller=caller,
-        status=status,
-        execution_id=execution_id,
-    )
-    if decision and not decision.accepted:
-        rejection = store.record_transition_rejection(
-            task_id,
-            case_name=decision.case_name,
-            caller=caller,
-            execution_id=execution_id,
-            rejection_reason=decision.rejection_reason,
-        )
-        task = rejection.task if rejection is not None else store.get(task_id)
-        return decision, task, apply_result
-
-    applied_case = fallback_case_name
-    if decision and decision.accepted:
-        applied_case = decision.case_name
-    apply_result = store.accept_terminal_writeback(
-        task_id,
-        status=status,
-        caller=caller,
-        execution_id=execution_id,
-        metadata=metadata,
-        case_name=applied_case,
-    )
-    return decision, task, apply_result
-
-
 def _fail_claimed_task(
     *,
     team_name: str,
@@ -399,11 +432,10 @@ def _fail_claimed_task(
         failure_metadata["session_key"] = session_key
     if stall_phase:
         failure_metadata["stall_phase"] = stall_phase
-    decision, task, apply_result = _apply_runtime_terminal_writeback(
-        store=store,
-        task_id=task_id,
-        caller=agent_name,
+    decision, task, apply_result = store.apply_runtime_terminal_writeback(
+        task_id,
         status=TaskStatus.failed,
+        caller=agent_name,
         execution_id=execution_id,
         metadata=failure_metadata,
         fallback_case_name="worker_runtime_failed_closed",
@@ -646,6 +678,44 @@ def run_worker_iteration(
             and refreshed.locked_by == agent_name
         ):
             transcript_tail = _read_transcript_tail(session_key)
+            inferred_terminal = _infer_terminal_status_from_transcript_tail(transcript_tail)
+            if inferred_terminal is not None:
+                inferred_status, result_block, result_value = inferred_terminal
+                recovery_metadata = {
+                    "runtime_terminal_recovery": "transcript_result_block",
+                    "runtime_terminal_recovery_result_block": result_block,
+                    "runtime_terminal_recovery_result_value": result_value,
+                    "runtime_terminal_recovery_session_key": session_key,
+                    "runtime_terminal_recovery_at": _now_iso(),
+                }
+                recovered_decision, recovered_task, recovered_apply = store.apply_runtime_terminal_writeback(
+                    claimed.id,
+                    status=inferred_status,
+                    caller=agent_name,
+                    execution_id=claimed.active_execution_id,
+                    metadata=recovery_metadata,
+                    fallback_case_name="worker_runtime_transcript_terminal_recovery",
+                )
+                if recovered_decision is None or recovered_decision.accepted:
+                    terminal_task = recovered_apply.task if recovered_apply is not None else recovered_task
+                    return {
+                        "status": "recovered_terminal",
+                        "messages": message_count,
+                        "acked": acked_count,
+                        "taskId": claimed.id,
+                        "executionId": claimed.active_execution_id,
+                        "executionSeq": claimed.execution_seq,
+                        "claimCase": claim_result.case_name,
+                        "returncode": result.returncode,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "command": command,
+                        "sessionKey": session_key,
+                        "recoveredStatus": inferred_status.value,
+                        "recoveredFrom": result_block,
+                        "taskStatus": terminal_task.status.value if terminal_task is not None else inferred_status.value,
+                    }
+
             evidence_parts = [
                 "openclaw agent returned success but task remained in_progress and locked to the same worker",
                 f"session_key={session_key}",
