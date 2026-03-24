@@ -281,6 +281,22 @@ def plan_terminal_writeback(
     )
 
 
+def plan_runtime_terminal_writeback(
+    *,
+    existing: TaskItem,
+    caller: str,
+    status: TaskStatus | None,
+    execution_id: str | None,
+) -> TaskTransitionDecision | None:
+    return plan_execution_scoped_terminal_writeback(
+        existing=existing,
+        caller=caller,
+        requested_status=status,
+        execution_id=execution_id,
+        runtime_path=True,
+    )
+
+
 def plan_reopen_task(
     *,
     existing: TaskItem,
