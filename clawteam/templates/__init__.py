@@ -70,8 +70,17 @@ class PreparedTaskLaunchBrief(BaseModel):
     metadata_patch: dict[str, object] = Field(default_factory=dict)
 
 
+class LaunchTaskInput(BaseModel):
+    subject: str
+    description: str
+    owner: str
+    blocked_by: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 NormalizedLaunchBrief.model_rebuild()
 PreparedTaskLaunchBrief.model_rebuild()
+LaunchTaskInput.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +230,39 @@ def prepare_task_launch_brief(task: str, **variables: str) -> PreparedTaskLaunch
 def render_task_brief(task: str, **variables: str) -> str:
     """Backward-compatible helper returning only rendered launch description."""
     return prepare_task_launch_brief(task, **variables).rendered_description
+
+
+def build_launch_task_input(
+    task_def: TaskDef,
+    *,
+    goal: str,
+    team_name: str,
+    created_task_ids: dict[str, str],
+) -> LaunchTaskInput:
+    """Canonical launch-task preparation entrypoint.
+
+    Produces the task payload consumed by the CLI create path so description and
+    metadata stay derived from one launch-boundary decision.
+    """
+    metadata: dict[str, object] = {}
+    if task_def.on_fail:
+        metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
+
+    prepared_brief = prepare_task_launch_brief(
+        task_def.description,
+        goal=goal,
+        team_name=team_name,
+        agent_name=task_def.owner,
+    )
+    metadata.update(prepared_brief.metadata_patch)
+
+    return LaunchTaskInput(
+        subject=task_def.subject,
+        description=prepared_brief.rendered_description,
+        owner=task_def.owner,
+        blocked_by=[created_task_ids[name] for name in task_def.blocked_by],
+        metadata=metadata,
+    )
 
 
 # ---------------------------------------------------------------------------

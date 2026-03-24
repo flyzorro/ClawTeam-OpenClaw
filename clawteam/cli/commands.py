@@ -18,7 +18,7 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.delivery.release_notifier import notify_task_release
-from clawteam.templates import prepare_task_launch_brief, render_task
+from clawteam.templates import build_launch_task_input, render_task
 from clawteam.services import (
     RuntimeOrchestrator,
     TaskReleaseContext,
@@ -2594,25 +2594,19 @@ def launch_team(
             )
             raise typer.Exit(1)
 
-        metadata = {}
-        if task_def.on_fail:
-            metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
-
-        prepared_brief = prepare_task_launch_brief(
-            task_def.description,
+        launch_task_input = build_launch_task_input(
+            task_def,
             goal=goal,
             team_name=t_name,
-            agent_name=task_def.owner,
+            created_task_ids=created_task_ids,
         )
-        rendered_description = prepared_brief.rendered_description
-        metadata.update(prepared_brief.metadata_patch)
 
         task = ts.create(
-            subject=task_def.subject,
-            description=rendered_description,
-            owner=task_def.owner,
-            blocked_by=[created_task_ids[name] for name in task_def.blocked_by],
-            metadata=metadata,
+            subject=launch_task_input.subject,
+            description=launch_task_input.description,
+            owner=launch_task_input.owner,
+            blocked_by=launch_task_input.blocked_by,
+            metadata=launch_task_input.metadata,
         )
         created_task_ids[task_def.subject] = task.id
 
