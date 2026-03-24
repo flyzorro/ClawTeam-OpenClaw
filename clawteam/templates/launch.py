@@ -3,6 +3,18 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class LaunchTemplateError(ValueError):
+    """Base typed error for launch-boundary failures."""
+
+
+class LaunchReferenceError(LaunchTemplateError):
+    """Raised when a template references a task that is not launchable yet."""
+
+
+class LaunchTaskBuildError(LaunchTemplateError):
+    """Raised when launch task input construction fails."""
+
+
 class LaunchBriefSections(BaseModel):
     version: str = "v1"
     source_request: str = ""
@@ -182,13 +194,13 @@ def build_launch_task_input(
     """
     missing_dependencies = [name for name in task_def.blocked_by if name not in created_task_ids]
     if missing_dependencies:
-        raise ValueError(
+        raise LaunchReferenceError(
             f"Template task '{task_def.subject}' references unknown or not-yet-created blocked_by tasks: {', '.join(missing_dependencies)}"
         )
 
     missing_fail_targets = [name for name in task_def.on_fail if name not in created_task_ids]
     if missing_fail_targets:
-        raise ValueError(
+        raise LaunchReferenceError(
             f"Template task '{task_def.subject}' references unknown or not-yet-created on_fail tasks: {', '.join(missing_fail_targets)}"
         )
 

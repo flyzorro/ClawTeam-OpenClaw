@@ -53,7 +53,10 @@ class TemplateDef(BaseModel):
 from .launch import (
     LaunchBriefSections,
     LaunchExecutionResult,
+    LaunchReferenceError,
+    LaunchTaskBuildError,
     LaunchTaskInput,
+    LaunchTemplateError,
     NormalizedLaunchBrief,
     PreparedTaskLaunchBrief,
     normalize_launch_brief,
