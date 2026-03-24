@@ -5,11 +5,13 @@ import pytest
 from clawteam.templates import (
     AgentDef,
     LaunchBriefSections,
+    LaunchTaskInput,
     NormalizedLaunchBrief,
     PreparedTaskLaunchBrief,
     TaskDef,
     TemplateDef,
     _SafeDict,
+    build_launch_task_input,
     list_templates,
     load_template,
     normalize_launch_brief,
@@ -182,6 +184,43 @@ Deliver the smallest safe change.
             },
         )
         assert "## Brief Format\nprose_fallback" in prepared.rendered_description
+
+    def test_build_launch_task_input_keeps_description_and_metadata_same_source(self):
+        task_input = build_launch_task_input(
+            TaskDef(
+                subject="Implement",
+                description="Clarify {goal} into a minimal deliverable.",
+                owner="dev1",
+                blocked_by=["Scope"],
+                on_fail=["Scope"],
+            ),
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            created_task_ids={"Scope": "task-scope-1"},
+        )
+
+        assert task_input == LaunchTaskInput(
+            subject="Implement",
+            description=task_input.description,
+            owner="dev1",
+            blocked_by=["task-scope-1"],
+            metadata={
+                "on_fail": ["task-scope-1"],
+                "launch_brief": {
+                    "format": "prose_fallback",
+                    "sections": {
+                        "version": "v1",
+                        "source_request": "Ship the feature safely",
+                        "scoped_brief": "Clarify Ship the feature safely into a minimal deliverable.",
+                        "unknowns": [],
+                        "leader_assumptions": [],
+                        "out_of_scope": [],
+                    },
+                },
+            },
+        )
+        assert "## Source Request" in task_input.description
+        assert "## Brief Format\nprose_fallback" in task_input.description
 
     def test_render_task_brief_wraps_old_prose_into_sections(self):
         rendered = render_task_brief(
