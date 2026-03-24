@@ -1,0 +1,458 @@
+from __future__ import annotations
+
+import re
+
+from pydantic import BaseModel, Field
+
+
+class LaunchTemplateError(ValueError):
+    """Base typed error for launch-boundary failures."""
+
+
+class LaunchReferenceError(LaunchTemplateError):
+    """Raised when a template references a task that is not launchable yet."""
+
+    def __init__(self, *, task_subject: str, reference_kind: str, missing_refs: list[str]):
+        self.task_subject = task_subject
+        self.reference_kind = reference_kind
+        self.missing_refs = missing_refs
+        super().__init__(
+            f"Template task '{task_subject}' references unknown or not-yet-created "
+            f"{reference_kind} tasks: {', '.join(missing_refs)}"
+        )
+
+
+class LaunchTaskBuildError(LaunchTemplateError):
+    """Raised when launch task input construction fails."""
+
+
+class ScopeTaskValidationError(LaunchTemplateError):
+    """Raised when a scope-task completion payload is missing or invalid."""
+
+
+class LaunchBriefSections(BaseModel):
+    version: str = "v1"
+    source_request: str = ""
+    scoped_brief: str = ""
+    unknowns: list[str] = Field(default_factory=list)
+    leader_assumptions: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+
+
+class NormalizedLaunchBrief(BaseModel):
+    format: str = "prose_fallback"
+    sections: LaunchBriefSections = Field(default_factory=LaunchBriefSections)
+
+
+class PreparedTaskLaunchBrief(BaseModel):
+    rendered_description: str
+    normalized_brief: NormalizedLaunchBrief
+    metadata_patch: dict[str, object] = Field(default_factory=dict)
+
+
+class LaunchTaskInput(BaseModel):
+    subject: str
+    description: str
+    owner: str
+    blocked_by: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class LaunchExecutionResult(BaseModel):
+    created_task_ids: dict[str, str] = Field(default_factory=dict)
+
+
+class TaskLaunchBriefView(BaseModel):
+    format: str = "prose_fallback"
+    source_request: str = ""
+    scoped_brief: str = ""
+    unknowns: list[str] = Field(default_factory=list)
+    leader_assumptions: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+
+
+_NO_INVENTION_ENTITY_PATTERNS: dict[str, tuple[str, ...]] = {
+    "endpoint": (r"\bendpoint(?:s)?\b", r"\broute(?:s)?\b"),
+    "api": (r"\bapi(?:s)?\b",),
+    "schema": (r"\bschema(?:s)?\b",),
+    "page": (r"\bpage(?:s)?\b",),
+    "tab": (r"\btab(?:s)?\b",),
+    "workflow": (r"\bworkflow(?:s)?\b",),
+    "deliverable": (r"\bdeliverable(?:s)?\b",),
+}
+
+_TIGHTENING_REQUIREMENT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "must": (r"\bmust\b",),
+    "required": (r"\brequired\b",),
+    "mandatory": (r"\bmandatory\b",),
+    "ensure": (r"\bensure\b",),
+    "guarantee": (r"\bguarantee\b",),
+    "production-ready": (r"\bproduction[-\s]ready\b",),
+    "full-coverage": (r"\bfull\s+coverage\b",),
+    "all-cases": (r"\ball\s+cases\b",),
+    "end-to-end": (r"\bend[-\s]to[-\s]end\b",),
+    "no-regressions": (r"\bno\s+regressions\b",),
+}
+
+# Hard-fail only on explicit additive intent, not merely on new vocabulary.
+_STRONG_ADDITIVE_INTENT_PATTERNS: tuple[str, ...] = (
+    r"\badd\b",
+    r"\bcreate\b",
+    r"\bintroduce\b",
+)
+
+_NEGATED_ADDITIVE_PATTERNS: tuple[str, ...] = (
+    r"\bwithout\s+adding\b",
+    r"\bwithout\s+creating\b",
+    r"\bwithout\s+introducing\b",
+    r"\bno\s+new\b",
+    r"\bnot\s+add(?:ing)?\b",
+    r"\bnot\s+create(?:ing)?\b",
+    r"\bnot\s+introduc(?:e|ing)\b",
+)
+
+
+def _matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _has_positive_additive_intent(text: str, entity_patterns: tuple[str, ...]) -> bool:
+    if _matches_any_pattern(text, _NEGATED_ADDITIVE_PATTERNS):
+        return False
+    if _matches_any_pattern(text, _STRONG_ADDITIVE_INTENT_PATTERNS):
+        return True
+    new_with_entity_patterns = tuple(rf"\bnew\s+{pattern.lstrip('\\b')}" for pattern in entity_patterns)
+    if _matches_any_pattern(text, new_with_entity_patterns):
+        return True
+    action_with_new_entity_patterns = tuple(
+        rf"\b(?:add|create|introduce)(?:\s+\w+){{0,3}}\s+new\s+{pattern.lstrip('\\b')}"
+        for pattern in entity_patterns
+    )
+    return _matches_any_pattern(text, action_with_new_entity_patterns)
+
+
+def find_scope_inventions(*, source_request: str, scoped_brief: str) -> list[str]:
+    inventions: list[str] = []
+    for label, patterns in _NO_INVENTION_ENTITY_PATTERNS.items():
+        if not _has_positive_additive_intent(scoped_brief, patterns):
+            continue
+        if _matches_any_pattern(scoped_brief, patterns) and not _matches_any_pattern(source_request, patterns):
+            inventions.append(label)
+    return inventions
+
+
+def find_scope_tightening(*, source_request: str, scoped_brief: str) -> list[str]:
+    tightenings: list[str] = []
+    for label, patterns in _TIGHTENING_REQUIREMENT_PATTERNS.items():
+        if _matches_any_pattern(scoped_brief, patterns) and not _matches_any_pattern(source_request, patterns):
+            tightenings.append(label)
+    return tightenings
+
+
+def validate_scope_task_completion(*, source_request: str, leader_brief: str) -> NormalizedLaunchBrief:
+    normalized = normalize_launch_brief(source_request=source_request, leader_brief=leader_brief)
+    if normalized.format != "structured_sections":
+        raise ScopeTaskValidationError(
+            "Scope task completion must replace the task description with the exact structured sections."
+        )
+    if not normalized.sections.scoped_brief.strip():
+        raise ScopeTaskValidationError("Scope task completion is missing a non-empty Scoped Brief section.")
+    invented_entities = find_scope_inventions(
+        source_request=source_request,
+        scoped_brief=normalized.sections.scoped_brief,
+    )
+    if invented_entities:
+        raise ScopeTaskValidationError(
+            "Scope task completion invents new scope entities not present in the source request: "
+            + ", ".join(invented_entities)
+        )
+    return normalized
+
+
+def _coerce_normalized_launch_brief(value: NormalizedLaunchBrief | dict[str, object]) -> NormalizedLaunchBrief:
+    if isinstance(value, NormalizedLaunchBrief):
+        return value
+    return NormalizedLaunchBrief.model_validate(value)
+
+
+def render_resolved_scope_context(normalized: NormalizedLaunchBrief | dict[str, object]) -> str:
+    normalized = _coerce_normalized_launch_brief(normalized)
+    sections = normalized.sections
+
+    def _bullet_lines(values: list[str]) -> str:
+        return "\n".join(f"- {value}" for value in values) if values else "- none"
+
+    return "\n\n".join(
+        [
+            "## Resolved Scope Context",
+            f"### Source Request\n{sections.source_request or '- none'}",
+            f"### Scoped Brief\n{sections.scoped_brief or '- none'}",
+            f"### Unknowns\n{_bullet_lines(sections.unknowns)}",
+            f"### Leader Assumptions\n{_bullet_lines(sections.leader_assumptions)}",
+            f"### Out of Scope\n{_bullet_lines(sections.out_of_scope)}",
+        ]
+    )
+
+
+def inject_resolved_scope_context(*, description: str, normalized: NormalizedLaunchBrief | dict[str, object]) -> str:
+    normalized = _coerce_normalized_launch_brief(normalized)
+    text = (description or "").strip()
+    marker = "## Resolved Scope Context"
+    task_brief_marker = "## Task Brief"
+    if text.startswith(marker) and task_brief_marker in text:
+        _, _, remainder = text.partition(task_brief_marker)
+        text = remainder.strip()
+    scope_block = render_resolved_scope_context(normalized)
+    if not text:
+        return scope_block
+    return f"{scope_block}\n\n## Task Brief\n{text}"
+
+
+NormalizedLaunchBrief.model_rebuild()
+PreparedTaskLaunchBrief.model_rebuild()
+LaunchTaskInput.model_rebuild()
+LaunchExecutionResult.model_rebuild()
+
+
+def _normalize_lines(value: str) -> list[str]:
+    lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- "):
+            stripped = stripped[2:].strip()
+        lines.append(stripped)
+    return lines
+
+
+def normalize_launch_brief(*, source_request: str, leader_brief: str) -> NormalizedLaunchBrief:
+    """Normalize launch input into an explicit brief contract.
+
+    Structured format is intentionally minimal and section-labeled:
+    ## Source Request
+    ## Scoped Brief
+    ## Unknowns
+    ## Leader Assumptions
+    ## Out of Scope
+    """
+    text = leader_brief.strip()
+    if not text:
+        return NormalizedLaunchBrief(
+            format="empty",
+            sections=LaunchBriefSections(source_request=source_request),
+        )
+
+    labels = {
+        "source request": "source_request",
+        "scoped brief": "scoped_brief",
+        "unknowns": "unknowns",
+        "leader assumptions": "leader_assumptions",
+        "out of scope": "out_of_scope",
+    }
+    current: str | None = None
+    sections: dict[str, list[str]] = {value: [] for value in labels.values()}
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("## "):
+            key = lowered[3:].strip()
+            current = labels.get(key)
+            continue
+        if current is not None:
+            sections[current].append(line)
+
+    if any(sections.values()):
+        return NormalizedLaunchBrief(
+            format="structured_sections",
+            sections=LaunchBriefSections(
+                source_request="\n".join(sections["source_request"]).strip() or source_request,
+                scoped_brief="\n".join(sections["scoped_brief"]).strip(),
+                unknowns=_normalize_lines("\n".join(sections["unknowns"])),
+                leader_assumptions=_normalize_lines("\n".join(sections["leader_assumptions"])),
+                out_of_scope=_normalize_lines("\n".join(sections["out_of_scope"])),
+            ),
+        )
+
+    return NormalizedLaunchBrief(
+        format="prose_fallback",
+        sections=LaunchBriefSections(
+            source_request=source_request,
+            scoped_brief=text,
+        ),
+    )
+
+
+def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBriefSections:
+    """Backward-compatible helper returning only the normalized sections."""
+    return normalize_launch_brief(
+        source_request=source_request,
+        leader_brief=leader_brief,
+    ).sections
+
+
+def _render_normalized_launch_brief(normalized: NormalizedLaunchBrief) -> str:
+    sections = normalized.sections
+
+    def _bullet_lines(values: list[str]) -> str:
+        return "\n".join(f"- {value}" for value in values) if values else "- none"
+
+    return "\n\n".join(
+        [
+            f"## Source Request\n{sections.source_request or '- none'}",
+            f"## Scoped Brief\n{sections.scoped_brief or '- none'}",
+            f"## Unknowns\n{_bullet_lines(sections.unknowns)}",
+            f"## Leader Assumptions\n{_bullet_lines(sections.leader_assumptions)}",
+            f"## Out of Scope\n{_bullet_lines(sections.out_of_scope)}",
+            f"## Brief Format\n{normalized.format}",
+            "## Interpretation Rules\n"
+            "- Treat Source Request as the original user intent.\n"
+            "- Treat Scoped Brief as the current working scope.\n"
+            "- Do not silently convert Unknowns into requirements.\n"
+            "- Treat Leader Assumptions as provisional, not confirmed fact.\n"
+            "- Do not implement Out of Scope items in the current task.",
+        ]
+    )
+
+
+def prepare_task_launch_brief(task: str, *, render_task, **variables: str) -> PreparedTaskLaunchBrief:
+    """Single launch-boundary entrypoint for task brief preparation.
+
+    This keeps render/normalize/metadata logic out of the CLI composition root.
+    """
+    rendered = render_task(task, **variables).strip()
+    normalized = normalize_launch_brief(
+        source_request=variables.get("goal", ""),
+        leader_brief=rendered,
+    )
+    return PreparedTaskLaunchBrief(
+        rendered_description=_render_normalized_launch_brief(normalized),
+        normalized_brief=normalized,
+        metadata_patch={"launch_brief": normalized.model_dump(mode="json")},
+    )
+
+
+def render_task_brief(task: str, *, render_task, **variables: str) -> str:
+    """Backward-compatible helper returning only rendered launch description."""
+    return prepare_task_launch_brief(task, render_task=render_task, **variables).rendered_description
+
+
+def read_launch_brief_metadata(metadata: dict[str, object] | None) -> NormalizedLaunchBrief | None:
+    """Read the canonical machine launch-brief contract from task metadata only."""
+    if not metadata:
+        return None
+
+    launch_brief = metadata.get("launch_brief")
+    if launch_brief is None:
+        return None
+    if not isinstance(launch_brief, dict):
+        raise LaunchTaskBuildError("Task launch_brief metadata must be a mapping.")
+
+    return NormalizedLaunchBrief.model_validate(launch_brief)
+
+
+def read_task_launch_brief(task) -> TaskLaunchBriefView | None:
+    """Return the canonical task launch-brief view from metadata only.
+
+    Intentionally does not parse task.description. Human-facing description is presentation;
+    task.metadata['launch_brief'] is the machine-readable contract boundary.
+    """
+    normalized = read_launch_brief_metadata(getattr(task, "metadata", None))
+    if normalized is None:
+        return None
+
+    return TaskLaunchBriefView(
+        format=normalized.format,
+        source_request=normalized.sections.source_request,
+        scoped_brief=normalized.sections.scoped_brief,
+        unknowns=list(normalized.sections.unknowns),
+        leader_assumptions=list(normalized.sections.leader_assumptions),
+        out_of_scope=list(normalized.sections.out_of_scope),
+    )
+
+
+def build_launch_task_input(
+    task_def,
+    *,
+    goal: str,
+    team_name: str,
+    created_task_ids: dict[str, str],
+    render_task,
+) -> LaunchTaskInput:
+    """Canonical launch-task preparation entrypoint.
+
+    Produces the task payload consumed by the CLI create path so description,
+    reference validation, and metadata stay derived from one launch-boundary
+    decision.
+    """
+    missing_dependencies = [name for name in task_def.blocked_by if name not in created_task_ids]
+    if missing_dependencies:
+        raise LaunchReferenceError(
+            task_subject=task_def.subject,
+            reference_kind="blocked_by",
+            missing_refs=missing_dependencies,
+        )
+
+    missing_fail_targets = [name for name in task_def.on_fail if name not in created_task_ids]
+    if missing_fail_targets:
+        raise LaunchReferenceError(
+            task_subject=task_def.subject,
+            reference_kind="on_fail",
+            missing_refs=missing_fail_targets,
+        )
+
+    metadata: dict[str, object] = {}
+    if task_def.on_fail:
+        metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
+    if task_def.stage:
+        metadata["template_stage"] = task_def.stage.strip().lower()
+
+    prepared_brief = prepare_task_launch_brief(
+        task_def.description,
+        goal=goal,
+        team_name=team_name,
+        agent_name=task_def.owner,
+        render_task=render_task,
+    )
+    metadata.update(prepared_brief.metadata_patch)
+
+    return LaunchTaskInput(
+        subject=task_def.subject,
+        description=prepared_brief.rendered_description,
+        owner=task_def.owner,
+        blocked_by=[created_task_ids[name] for name in task_def.blocked_by],
+        metadata=metadata,
+    )
+
+
+def execute_template_launch(
+    task_store,
+    tasks,
+    *,
+    goal: str,
+    team_name: str,
+    render_task,
+) -> LaunchExecutionResult:
+    """Execute authored-order template task creation behind one launch boundary."""
+    created_task_ids: dict[str, str] = {}
+
+    for task_def in tasks:
+        launch_task_input = build_launch_task_input(
+            task_def,
+            goal=goal,
+            team_name=team_name,
+            created_task_ids=created_task_ids,
+            render_task=render_task,
+        )
+        task = task_store.create(
+            subject=launch_task_input.subject,
+            description=launch_task_input.description,
+            owner=launch_task_input.owner,
+            blocked_by=launch_task_input.blocked_by,
+            metadata=launch_task_input.metadata,
+        )
+        created_task_ids[task_def.subject] = task.id
+
+    return LaunchExecutionResult(created_task_ids=created_task_ids)

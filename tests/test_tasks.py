@@ -170,6 +170,72 @@ class TestDependencyResolution:
         assert t3_after.status == TaskStatus.pending
         assert t3_after.blocked_by == []
 
+    def test_failed_task_reopens_on_fail_targets(self, store):
+        impl = store.create("implement")
+        qa = store.create(
+            "qa",
+            blocked_by=[impl.id],
+            metadata={"on_fail": [impl.id]},
+        )
+
+        store.update(impl.id, status=TaskStatus.completed)
+        qa_ready = store.get(qa.id)
+        assert qa_ready.status == TaskStatus.pending
+
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
+        store.update(qa.id, status=TaskStatus.failed, metadata={"failure_kind": "regular"})
+
+        impl_after = store.get(impl.id)
+        assert impl_after.status == TaskStatus.pending
+        assert qa.id in impl_after.blocked_by
+
+    def test_failed_task_does_not_reopen_on_fail_targets_before_it_actually_starts(self, store):
+        impl = store.create("implement")
+        qa = store.create(
+            "qa",
+            blocked_by=[impl.id],
+            metadata={"on_fail": [impl.id]},
+        )
+
+        store.update(impl.id, status=TaskStatus.completed)
+        qa_ready = store.get(qa.id)
+        assert qa_ready.status == TaskStatus.pending
+        assert not qa_ready.started_at
+
+        store.update(qa.id, status=TaskStatus.failed)
+
+        impl_after = store.get(impl.id)
+        assert impl_after.status == TaskStatus.completed
+        assert qa.id not in impl_after.blocked_by
+
+    def test_failed_task_complex_does_not_reopen_on_fail_targets(self, store):
+        impl = store.create("implement")
+        qa = store.create(
+            "qa",
+            blocked_by=[impl.id],
+            metadata={"on_fail": [impl.id]},
+        )
+
+        store.update(impl.id, status=TaskStatus.completed)
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
+        store.update(qa.id, status=TaskStatus.failed, metadata={"failure_kind": "complex"})
+
+        impl_after = store.get(impl.id)
+        assert impl_after.status == TaskStatus.completed
+        assert qa.id not in impl_after.blocked_by
+
+    def test_failed_task_without_on_fail_does_not_reopen_anything(self, store):
+        impl = store.create("implement")
+        qa = store.create("qa", blocked_by=[impl.id])
+
+        store.update(impl.id, status=TaskStatus.completed)
+        store.update(qa.id, status=TaskStatus.failed)
+
+        impl_after = store.get(impl.id)
+        assert impl_after.status == TaskStatus.completed
+
 
 class TestTaskLocking:
     def test_lock_acquired_on_in_progress(self, store):
@@ -265,6 +331,46 @@ class TestDurationTracking:
         t = TaskItem(subject="alias test")
         dumped = t.model_dump(by_alias=True)
         assert "startedAt" in dumped
+
+
+class TestReplacementCleanup:
+    def test_clear_unfinished_tasks_for_owner_removes_only_started_owner_tasks(self, store):
+        keep = store.create("keep", owner="bob")
+        pending = store.create("pending", owner="alice")
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            in_progress = store.create("in progress", owner="alice")
+            store.update(in_progress.id, status=TaskStatus.in_progress, caller="alice")
+        blocked = store.create("blocked", owner="alice", blocked_by=[keep.id])
+        completed = store.create("done", owner="alice")
+        store.update(completed.id, status=TaskStatus.completed)
+
+        cleared = store.clear_unfinished_tasks_for_owner("alice")
+
+        assert {task.id for task in cleared} == {in_progress.id}
+        assert store.get(pending.id) is not None
+        assert store.get(in_progress.id) is None
+        assert store.get(blocked.id) is not None
+        assert store.get(completed.id) is not None
+        assert store.get(keep.id) is not None
+
+    def test_clear_unfinished_tasks_for_owner_cascades_only_to_started_unfinished_dependents(self, store):
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            root = store.create("impl", owner="alice")
+            store.update(root.id, status=TaskStatus.in_progress, caller="alice")
+            downstream_started = store.create("qa-started", owner="qa1", blocked_by=[root.id])
+            store.update(downstream_started.id, status=TaskStatus.in_progress, caller="qa1")
+        downstream_never_started = store.create("qa-blocked", owner="qa2", blocked_by=[root.id])
+        completed_downstream = store.create("archived", owner="qa3", blocked_by=[root.id])
+        store.update(completed_downstream.id, status=TaskStatus.completed)
+
+        cleared = store.clear_unfinished_tasks_for_owner("alice")
+
+        assert {task.id for task in cleared} == {root.id, downstream_started.id}
+        assert store.get(root.id) is None
+        assert store.get(downstream_started.id) is None
+        assert store.get(downstream_never_started.id) is not None
+        assert store.get(downstream_never_started.id).status == TaskStatus.blocked
+        assert store.get(completed_downstream.id) is not None
 
 
 class TestGetStats:
