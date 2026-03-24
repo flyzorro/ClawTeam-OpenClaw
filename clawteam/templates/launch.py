@@ -166,6 +166,15 @@ def validate_scope_task_completion(*, source_request: str, leader_brief: str) ->
             "Scope task completion invents new scope entities not present in the source request: "
             + ", ".join(invented_entities)
         )
+    tightened_requirements = find_scope_tightening(
+        source_request=source_request,
+        scoped_brief=normalized.sections.scoped_brief,
+    )
+    if tightened_requirements:
+        raise ScopeTaskValidationError(
+            "Scope task completion adds stricter requirements not present in the source request: "
+            + ", ".join(tightened_requirements)
+        )
     return normalized
 
 

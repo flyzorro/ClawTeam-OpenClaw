@@ -763,6 +763,78 @@ Add a new API endpoint and schema for the member list.
         )
 
 
+def test_execute_task_update_rejects_scope_tightening_as_task_validation(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    store = TaskStore("demo")
+    scope = store.create(
+        "Scope the task into a minimal deliverable",
+        owner="leader",
+        metadata={
+            "template_stage": "scope",
+            "launch_brief": {
+                "format": "structured_sections",
+                "sections": {
+                    "source_request": "Polish the member list UI.",
+                    "scoped_brief": "",
+                    "unknowns": [],
+                    "leader_assumptions": [],
+                    "out_of_scope": [],
+                },
+            },
+        },
+    )
+
+    tightened_description = """## Source Request
+Polish the member list UI.
+
+## Scoped Brief
+Polish the member list UI and ensure it is production-ready with no regressions.
+
+## Unknowns
+- none
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+"""
+
+    with pytest.raises(TaskUpdateValidationError, match="adds stricter requirements"):
+        execute_task_update(
+            task_id=scope.id,
+            caller="leader",
+            ctx=TaskUpdateContext(
+                store=store,
+                team="demo",
+                runtime=RuntimeOrchestrator(team="demo"),
+                release_notifier=lambda team, task, caller, message: None,
+                failure_notifier=lambda team, task, caller: None,
+            ),
+            request=TaskUpdateRequest(
+                status=TaskStatus.completed,
+                owner=None,
+                subject=None,
+                description=tightened_description,
+                add_blocks=None,
+                add_blocked_by=None,
+                add_on_fail=None,
+                failure_kind=None,
+                failure_note=None,
+                failure_root_cause=None,
+                failure_evidence=None,
+                failure_recommended_next_owner=None,
+                failure_recommended_action=None,
+                execution_id=None,
+                wake_owner=False,
+                message="",
+                force=False,
+            ),
+        )
+
+
 def test_execute_task_update_allows_scope_clarification_without_additive_intent(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 

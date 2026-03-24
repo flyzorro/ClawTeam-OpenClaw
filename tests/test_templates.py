@@ -19,6 +19,7 @@ from clawteam.templates import (
     build_launch_task_input,
     execute_template_launch,
     find_scope_inventions,
+    find_scope_tightening,
     list_templates,
     load_template,
     normalize_launch_brief,
@@ -234,6 +235,22 @@ Deliver the smallest safe change.
         )
 
         assert inventions == []
+
+    def test_find_scope_tightening_flags_new_hard_requirements_missing_from_source_request(self):
+        tightenings = find_scope_tightening(
+            source_request="Polish the member list UI.",
+            scoped_brief="Polish the member list UI and ensure it is production-ready with no regressions.",
+        )
+
+        assert tightenings == ["ensure", "production-ready", "no-regressions"]
+
+    def test_find_scope_tightening_allows_existing_requirement_language_from_source_request(self):
+        tightenings = find_scope_tightening(
+            source_request="Polish the member list UI and ensure there are no regressions.",
+            scoped_brief="Polish the member list UI and ensure there are no regressions.",
+        )
+
+        assert tightenings == []
 
     def test_prepare_task_launch_brief_is_single_entrypoint(self):
         prepared = prepare_task_launch_brief(
