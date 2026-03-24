@@ -59,6 +59,14 @@ class LaunchBriefSections(BaseModel):
     out_of_scope: list[str] = Field(default_factory=list)
 
 
+class NormalizedLaunchBrief(BaseModel):
+    format: str = "prose_fallback"
+    sections: LaunchBriefSections = Field(default_factory=LaunchBriefSections)
+
+
+NormalizedLaunchBrief.model_rebuild()
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -95,8 +103,8 @@ def _normalize_lines(value: str) -> list[str]:
     return lines
 
 
-def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBriefSections:
-    """Parse a structured launch brief when present, else fall back to prose.
+def normalize_launch_brief(*, source_request: str, leader_brief: str) -> NormalizedLaunchBrief:
+    """Normalize launch input into an explicit brief contract.
 
     Structured format is intentionally minimal and section-labeled:
     ## Source Request
@@ -107,7 +115,10 @@ def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBrief
     """
     text = leader_brief.strip()
     if not text:
-        return LaunchBriefSections(source_request=source_request)
+        return NormalizedLaunchBrief(
+            format="empty",
+            sections=LaunchBriefSections(source_request=source_request),
+        )
 
     labels = {
         "source request": "source_request",
@@ -131,18 +142,32 @@ def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBrief
             sections[current].append(line)
 
     if any(sections.values()):
-        return LaunchBriefSections(
-            source_request="\n".join(sections["source_request"]).strip() or source_request,
-            scoped_brief="\n".join(sections["scoped_brief"]).strip(),
-            unknowns=_normalize_lines("\n".join(sections["unknowns"])),
-            leader_assumptions=_normalize_lines("\n".join(sections["leader_assumptions"])),
-            out_of_scope=_normalize_lines("\n".join(sections["out_of_scope"])),
+        return NormalizedLaunchBrief(
+            format="structured_sections",
+            sections=LaunchBriefSections(
+                source_request="\n".join(sections["source_request"]).strip() or source_request,
+                scoped_brief="\n".join(sections["scoped_brief"]).strip(),
+                unknowns=_normalize_lines("\n".join(sections["unknowns"])),
+                leader_assumptions=_normalize_lines("\n".join(sections["leader_assumptions"])),
+                out_of_scope=_normalize_lines("\n".join(sections["out_of_scope"])),
+            ),
         )
 
-    return LaunchBriefSections(
-        source_request=source_request,
-        scoped_brief=text,
+    return NormalizedLaunchBrief(
+        format="prose_fallback",
+        sections=LaunchBriefSections(
+            source_request=source_request,
+            scoped_brief=text,
+        ),
     )
+
+
+def parse_launch_brief(*, source_request: str, leader_brief: str) -> LaunchBriefSections:
+    """Backward-compatible helper returning only the normalized sections."""
+    return normalize_launch_brief(
+        source_request=source_request,
+        leader_brief=leader_brief,
+    ).sections
 
 
 def render_task_brief(task: str, **variables: str) -> str:
@@ -152,10 +177,11 @@ def render_task_brief(task: str, **variables: str) -> str:
     while Source Request remains the original goal/request.
     """
     rendered = render_task(task, **variables).strip()
-    sections = parse_launch_brief(
+    normalized = normalize_launch_brief(
         source_request=variables.get("goal", ""),
         leader_brief=rendered,
     )
+    sections = normalized.sections
 
     def _bullet_lines(values: list[str]) -> str:
         return "\n".join(f"- {value}" for value in values) if values else "- none"
@@ -167,6 +193,7 @@ def render_task_brief(task: str, **variables: str) -> str:
             f"## Unknowns\n{_bullet_lines(sections.unknowns)}",
             f"## Leader Assumptions\n{_bullet_lines(sections.leader_assumptions)}",
             f"## Out of Scope\n{_bullet_lines(sections.out_of_scope)}",
+            f"## Brief Format\n{normalized.format}",
             "## Interpretation Rules\n"
             "- Treat Source Request as the original user intent.\n"
             "- Treat Scoped Brief as the current working scope.\n"
