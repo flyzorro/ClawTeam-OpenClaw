@@ -1832,6 +1832,46 @@ def lifecycle_on_exit(
     )
 
 
+@lifecycle_app.command("check-zombies")
+def lifecycle_check_zombies(
+    team: str = typer.Option(..., "--team", "-t", help="Team name"),
+    max_hours: float = typer.Option(2.0, "--max-hours", help="Warn if agent has been running longer than this many hours"),
+):
+    """Warn about agents that have been running unusually long (possible zombies).
+
+    Agents that never called on-exit will accumulate as background processes.
+    This command helps identify them so you can decide whether to stop them manually.
+    """
+    from clawteam.spawn.registry import list_zombie_agents
+
+    zombies = list_zombie_agents(team, max_hours=max_hours)
+
+    if not zombies:
+        _output(
+            {"team": team, "zombies": []},
+            lambda d: console.print(f"[green]✓[/green] No zombie agents detected for team '{team}'"),
+        )
+        return
+
+    def _fmt(d: dict) -> None:
+        console.print(
+            f"[bold yellow]⚠ {len(d['zombies'])} zombie agent(s) detected in team '{team}':[/bold yellow]"
+        )
+        for z in d["zombies"]:
+            console.print(
+                f"  [yellow]• {z['agent_name']}[/yellow]  "
+                f"pid={z['pid']}  backend={z['backend']}  "
+                f"running={z['running_hours']}h"
+            )
+        console.print(
+            "\n[dim]These processes did not call lifecycle on-exit. "
+            "Inspect them manually or run: clawteam lifecycle stop-agent --team <team> --agent <name>[/dim]"
+        )
+
+    _output({"team": team, "zombies": zombies}, _fmt)
+    raise typer.Exit(1)
+
+
 # ============================================================================
 # Spawn Command
 # ============================================================================
