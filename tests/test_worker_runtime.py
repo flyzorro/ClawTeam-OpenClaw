@@ -17,6 +17,7 @@ from clawteam.worker_runtime import (
     clear_replaced_worker_unfinished_tasks,
     detect_worker_replacement,
     run_worker_iteration,
+    worker_loop,
 )
 
 
@@ -354,6 +355,29 @@ def test_run_worker_iteration_keeps_pending_task_idle_until_explicit_wake(monkey
     assert updated is not None
     assert updated.status.value == "pending"
     assert updated.locked_by == ""
+
+
+def test_worker_loop_exits_when_team_is_terminal(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+
+    task = TaskStore("demo").create(subject="Done", description="terminal", owner="qa1")
+    TaskStore("demo").update(task.id, status=TaskStatus.completed, caller="qa1")
+
+    called = {"iterations": 0}
+
+    def fake_run_worker_iteration(*args, **kwargs):
+        called["iterations"] += 1
+        return {"status": "should_not_run"}
+
+    monkeypatch.setattr(worker_runtime, "run_worker_iteration", fake_run_worker_iteration)
+
+    history = worker_loop(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert called["iterations"] == 0
+    assert history == [{"status": "team_terminal", "team": "demo", "agent": "qa1"}]
 
 
 def test_run_worker_iteration_fails_closed_on_nonzero_agent_exit(monkeypatch, tmp_path):

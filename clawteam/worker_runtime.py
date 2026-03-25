@@ -500,6 +500,15 @@ def _wait_for_post_exit_settle(
         time.sleep(max(poll_interval_seconds, 0.05))
 
 
+def _team_is_terminal(team_name: str) -> bool:
+    store = TaskStore(team_name)
+    tasks = store.list_tasks()
+    if not tasks:
+        return False
+    terminal_statuses = {TaskStatus.completed, TaskStatus.failed}
+    return all(task.status in terminal_statuses for task in tasks)
+
+
 def _fail_claimed_task(
     *,
     team_name: str,
@@ -892,6 +901,13 @@ def worker_loop(
 ) -> list[dict[str, Any]]:
     history: list[dict[str, Any]] = []
     while True:
+        if _team_is_terminal(team_name):
+            history.append({
+                "status": "team_terminal",
+                "team": team_name,
+                "agent": agent_name,
+            })
+            return history
         result = run_worker_iteration(
             team_name=team_name,
             agent_name=agent_name,
