@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from clawteam.spawn.prompt import build_agent_prompt
+from clawteam.task.terminal_commands import build_terminal_task_update_command
 
 
 def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch):
@@ -32,7 +33,13 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert expected_bootstrap in prompt
     assert "'/tmp/custom bin/clawteam' identity set" in prompt
     assert "CLAWTEAM_TASK_EXECUTION_ID=task-123-exec-9" in prompt
-    assert "'/tmp/custom bin/clawteam' task update demo team <task-id> --status completed" in prompt
+    assert build_terminal_task_update_command(
+        executable="/tmp/custom bin/clawteam",
+        team_name="demo team",
+        task_id="<task-id>",
+        status="completed",
+        execution_id="task-123-exec-9",
+    ) in prompt
     assert "--shell" in prompt
     assert "--data-dir '/tmp/clawteam data dir'" in prompt
     assert "Workflow topology belongs to the leader/template/state machine" in prompt

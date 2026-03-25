@@ -15,6 +15,7 @@ from typing import Any
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.spawn.registry import unregister_agent
+from clawteam.task.terminal_commands import build_terminal_task_update_command
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
@@ -119,6 +120,24 @@ def build_worker_task_prompt(
             f"- Active Execution ID: {task.active_execution_id}",
         ])
 
+    terminal_complete_cmd = build_terminal_task_update_command(
+        team_name=team_name,
+        task_id=task.id,
+        status="completed",
+        execution_id=getattr(task, "active_execution_id", ""),
+    )
+    terminal_fail_cmd = build_terminal_task_update_command(
+        team_name=team_name,
+        task_id=task.id,
+        status="failed",
+        execution_id=getattr(task, "active_execution_id", ""),
+        failure_kind="complex",
+        failure_root_cause="<cause>",
+        failure_evidence="<evidence>",
+        failure_recommended_next_owner="leader",
+        failure_recommended_action="<action>",
+    )
+
     lines.extend([
         "",
         "## Required Runtime Protocol",
@@ -133,7 +152,8 @@ def build_worker_task_prompt(
         "- Workflow routing is owned by the leader/template/state machine. Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges unless the leader explicitly told you to do that.",
         f"- Before terminal completion, write the machine completion envelope to `$CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH` with task_id/execution_id/terminal_status. result_type and result_payload are optional business fields, not runtime authority.",
         f"- Example completion envelope command: `python3 - <<'PY'\nimport json, os\nfrom pathlib import Path\nPath(os.environ['CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH']).write_text(json.dumps({{'version': 1, 'task_id': '{task.id}', 'execution_id': '{getattr(task, 'active_execution_id', '')}', 'terminal_status': 'completed', 'result_type': 'DEV_RESULT', 'result_payload': {{'status': 'completed'}}}}) + '\\n', encoding='utf-8')\nPY`",
-        f"- When the task is truly complete, run `{clawteam_cmd} task update {team_name} {task.id} --status completed`.",
+        f"- When the task is truly complete, run `{terminal_complete_cmd}`.",
+        f"- When you must fail the claimed task, use an execution-scoped terminal writeback like `{terminal_fail_cmd}`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",
         "- Use structured result blocks instead of free-form prose.",
