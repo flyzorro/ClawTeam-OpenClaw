@@ -377,6 +377,19 @@ def execute_task_update(
         caller=caller,
         requested_status=request.status,
     )
+    if (
+        request.status in (TaskStatus.completed, TaskStatus.failed)
+        and request.execution_id is None
+        and not (recovery_decision and recovery_decision.accepted)
+    ):
+        ctx.store.record_transition_rejection(
+            task_id,
+            case_name="terminal_writeback_without_execution_scope",
+            caller=caller,
+            execution_id=request.execution_id,
+            rejection_reason="execution_id_required",
+        )
+        raise RuntimeError("terminal writeback rejected: execution_id_required")
     if recovery_decision and recovery_decision.accepted:
         metadata_keys_to_remove = recovery_decision.metadata_keys_to_remove
         metadata = dict(plan.metadata_to_apply or {})

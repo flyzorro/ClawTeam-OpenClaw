@@ -92,45 +92,49 @@ def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, t
         lambda *args, **kwargs: [{"taskId": impl.id, "owner": "dev1", "respawned": False}],
     )
 
-    result = execute_task_update(
-        task_id=qa.id,
-        caller="qa1",
-        ctx=TaskUpdateContext(
-            store=store,
-            team="demo",
-            runtime=RuntimeOrchestrator(team="demo"),
-            release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
-            failure_notifier=fake_notifier,
-        ),
-        request=TaskUpdateRequest(
-            status=TaskStatus.failed,
-            owner=None,
-            subject=None,
-            description=None,
-            add_blocks=None,
-            add_blocked_by=None,
-            add_on_fail=None,
-            failure_kind="complex",
-            failure_note=None,
-            failure_root_cause="ownership unclear",
-            failure_evidence="cross-cutting regression",
-            failure_recommended_next_owner="leader",
-            failure_recommended_action="triage owner",
-            execution_id=None,
-            wake_owner=False,
-            message="",
-            force=False,
-        ),
-    )
+    try:
+        execute_task_update(
+            task_id=qa.id,
+            caller="qa1",
+            ctx=TaskUpdateContext(
+                store=store,
+                team="demo",
+                runtime=RuntimeOrchestrator(team="demo"),
+                release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+                failure_notifier=fake_notifier,
+            ),
+            request=TaskUpdateRequest(
+                status=TaskStatus.failed,
+                owner=None,
+                subject=None,
+                description=None,
+                add_blocks=None,
+                add_blocked_by=None,
+                add_on_fail=None,
+                failure_kind="complex",
+                failure_note=None,
+                failure_root_cause="ownership unclear",
+                failure_evidence="cross-cutting regression",
+                failure_recommended_next_owner="leader",
+                failure_recommended_action="triage owner",
+                execution_id=None,
+                wake_owner=False,
+                message="",
+                force=False,
+            ),
+        )
+    except RuntimeError as exc:
+        assert "execution_id_required" in str(exc)
+    else:
+        raise AssertionError("expected execution_id_required rejection")
 
-    assert result.task.status == TaskStatus.failed
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "terminal_writeback_without_execution_scope"
-    assert result.transition_case == result.apply_result.case_name
-    assert result.plan.failed_targets_to_wake == []
-    assert result.effects.failure_notice is not None
-    assert result.effects.failure_notice["failureNotice"] == "sent"
-    assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
+    updated = store.get(qa.id)
+    assert updated is not None
+    assert updated.status == TaskStatus.pending
+    assert updated.metadata["transition_log"][-1]["case"] == "terminal_writeback_without_execution_scope"
+    assert updated.metadata["transition_log"][-1]["accepted"] is False
+    assert updated.metadata["transition_log"][-1]["rejectionReason"] == "execution_id_required"
+    assert notices == []
 
 
 def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure(monkeypatch, tmp_path):

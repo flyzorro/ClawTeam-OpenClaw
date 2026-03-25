@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from clawteam.team.models import TaskItem
+
+
+@dataclass(frozen=True)
+class ReplacementDecision:
+    owner: str
+    replacement_required: bool
+    replaced_execution_id: str | None
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -37,11 +45,10 @@ class RuntimeOrchestrator:
         respawned = False
         terminated_stale = False
         spawn_info = None
-        replacement_required = False
+        replacement = _plan_replacement(task=task, state_before=state_before, respawn=respawn)
         cleared_tasks: list[TaskItem] = []
 
-        if respawn and state_before in {"dead", "stale"}:
-            replacement_required = True
+        if replacement.replacement_required:
             store = TaskStore(self.team)
             cleared_tasks = store.clear_unfinished_tasks_for_owner(task.owner)
             member = TeamManager.get_member(self.team, task.owner)
@@ -65,7 +72,7 @@ class RuntimeOrchestrator:
             respawned = True
 
         notifier_result = None
-        if not replacement_required:
+        if not replacement.replacement_required:
             if respawn and state_before == "missing":
                 member = TeamManager.get_member(self.team, task.owner)
                 if member is None:
@@ -85,14 +92,17 @@ class RuntimeOrchestrator:
             notifier_result = notifier(self.team, task, caller, release_message)
 
         return {
-            "messageSent": not replacement_required,
+            "messageSent": not replacement.replacement_required,
             "message": release_message,
             "ownerAliveBefore": alive_before,
             "ownerRuntimeStateBefore": state_before,
             "terminatedStale": terminated_stale,
             "respawned": respawned,
             "spawn": spawn_info or {},
-            "replacementRequired": replacement_required,
+            "replacement": asdict(replacement),
+            "replacementRequired": replacement.replacement_required,
+            "replacementReason": replacement.reason,
+            "replacedExecutionId": replacement.replaced_execution_id,
             "clearedTaskIds": [item.id for item in cleared_tasks],
             "clearedTaskSubjects": [item.subject for item in cleared_tasks],
             **(notifier_result or {}),
@@ -225,3 +235,40 @@ def _spawn_existing_agent(
         "workspaceBranch": workspace_branch,
         "message": result,
     }
+
+
+def _plan_replacement(*, task: TaskItem, state_before: str | None, respawn: bool) -> ReplacementDecision:
+    if not respawn:
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=False,
+            replaced_execution_id=None,
+            reason="respawn_disabled",
+        )
+    if state_before in {"dead", "stale"}:
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=True,
+            replaced_execution_id=task.active_execution_id,
+            reason=state_before,
+        )
+    if state_before == "missing":
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=False,
+            replaced_execution_id=None,
+            reason="missing",
+        )
+    if state_before == "alive":
+        return ReplacementDecision(
+            owner=task.owner or "",
+            replacement_required=False,
+            replaced_execution_id=None,
+            reason="alive",
+        )
+    return ReplacementDecision(
+        owner=task.owner or "",
+        replacement_required=False,
+        replaced_execution_id=None,
+        reason="unknown",
+    )
