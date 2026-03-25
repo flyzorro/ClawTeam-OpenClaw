@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -101,6 +102,7 @@ def register_agent(
         "tmux_target": tmux_target,
         "pid": pid,
         "command": command or [],
+        "spawned_at": time.time(),
         "session_key": session_key,
         "agent_id": agent_id,
         "agent_type": agent_type,
@@ -230,58 +232,6 @@ def terminate_agent(team_name: str, agent_name: str, data_dir: str | Path | None
     return terminated
 
 
-def unregister_agent(
-    team_name: str,
-    agent_name: str,
-    data_dir: str | Path | None = None,
-    *,
-    session_key: str | None = None,
-) -> dict[str, object]:
-    """Remove one agent from spawn/session registries and prune empty tmux session."""
-    resolved_data_dir = _normalize_data_dir(data_dir)
-    path = _registry_path(team_name, resolved_data_dir)
-    registry = _load(path)
-    record = registry.pop(agent_name, None)
-    if record is not None:
-        _save(path, registry)
-
-    index_path = _session_index_path()
-    session_index = _load(index_path)
-    keys_to_remove: list[str] = []
-    if session_key:
-        keys_to_remove.append(session_key)
-    if isinstance(record, dict) and record.get("session_key"):
-        keys_to_remove.append(str(record.get("session_key")))
-    for key in keys_to_remove:
-        session_index.pop(key, None)
-    if keys_to_remove:
-        _save(index_path, session_index)
-
-    session_name = f"clawteam-{team_name}"
-    session_pruned = False
-    if not registry:
-        has_session = subprocess.run(
-            ["tmux", "has-session", "-t", session_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if has_session.returncode == 0:
-            kill = subprocess.run(
-                ["tmux", "kill-session", "-t", session_name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            session_pruned = kill.returncode == 0
-
-    return {
-        "removed": record is not None,
-        "sessionPruned": session_pruned,
-        "remainingAgents": len(registry),
-    }
-
-
-
 def list_dead_agents(team_name: str) -> list[str]:
     """Return names of agents whose processes are no longer alive."""
     registry = get_registry(team_name)
@@ -291,6 +241,34 @@ def list_dead_agents(team_name: str) -> list[str]:
         if state in {"dead", "stale"}:
             dead.append(name)
     return dead
+
+
+def list_zombie_agents(team_name: str, max_hours: float = 2.0) -> list[dict]:
+    """Return agents that are still alive but have been running longer than max_hours.
+
+    Each entry contains: agent_name, pid, backend, spawned_at (unix ts), running_hours.
+    Agents with no spawned_at recorded are skipped (legacy registry entries).
+    """
+    registry = get_registry(team_name)
+    threshold = max_hours * 3600
+    now = time.time()
+    zombies = []
+    for name, info in registry.items():
+        spawned_at = info.get("spawned_at")
+        if not spawned_at:
+            continue
+        alive = is_agent_alive(team_name, name)
+        if alive is True:
+            running_seconds = now - spawned_at
+            if running_seconds > threshold:
+                zombies.append({
+                    "agent_name": name,
+                    "pid": info.get("pid", 0),
+                    "backend": info.get("backend", ""),
+                    "spawned_at": spawned_at,
+                    "running_hours": round(running_seconds / 3600, 1),
+                })
+    return zombies
 
 
 def _tmux_pane_alive(target: str) -> bool:
