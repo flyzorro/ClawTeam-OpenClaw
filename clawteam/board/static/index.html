@@ -223,6 +223,8 @@ const S = {
       neutral: { background: 'var(--surface3)', color: 'var(--text-tertiary)' },
       blue: { background: 'rgba(10,132,255,0.16)', color: 'var(--blue)' },
       red: { background: 'rgba(255,69,58,0.16)', color: 'var(--red)' },
+      orange: { background: 'rgba(255,159,10,0.16)', color: 'var(--orange)' },
+      green: { background: 'rgba(48,209,88,0.16)', color: 'var(--green)' },
       purple: { background: 'rgba(191,90,242,0.16)', color: 'var(--purple)' },
     };
     const palette = tones[tone] || tones.neutral;
@@ -301,6 +303,47 @@ function Members({ members }) {
   );
 }
 
+function parseStructuredResult(content) {
+  if (!content) return null;
+  const normalized = String(content).trim();
+  const lines = normalized.split(/\r?\n/);
+  const header = (lines[0] || '').trim();
+  if (!header) return null;
+
+  const messageType = ['QA_RESULT', 'DEV_RESULT', 'REVIEW_RESULT'].includes(header)
+    ? header
+    : null;
+  if (!messageType) return null;
+
+  const statusMatch = normalized.match(/^status:\s*([^\n]+)/m);
+  const decisionMatch = normalized.match(/^decision:\s*([^\n]+)/m);
+  const summaryMatch = normalized.match(/^summary:\s*([^\n]+)/m);
+  const value = (statusMatch?.[1] || decisionMatch?.[1] || '').trim();
+
+  return {
+    messageType,
+    value,
+    summary: (summaryMatch?.[1] || '').trim(),
+  };
+}
+
+function resultTone(value) {
+  switch ((value || '').trim().toLowerCase()) {
+    case 'pass':
+    case 'approved':
+    case 'completed':
+      return 'green';
+    case 'pass_with_risk':
+      return 'orange';
+    case 'fail':
+    case 'blocked':
+    case 'changes_requested':
+      return 'red';
+    default:
+      return 'neutral';
+  }
+}
+
 function Messages({ messages }) {
   const sorted = useMemo(() => {
     return [...messages].sort((a, b) =>
@@ -318,16 +361,23 @@ function Messages({ messages }) {
         {sorted.length === 0 ? (
           <div style={S.msgEmpty}>No pending messages</div>
         ) : sorted.map((msg, i) => {
+          const parsed = parseStructuredResult(msg.content);
           const time = (msg.timestamp || '').slice(11, 19);
           const date = (msg.timestamp || '').slice(5, 10);
           return (
             <div key={i} style={S.msgItem}>
               <div style={S.msgMeta}>
-                <span style={S.msgTag}>{msg.type || 'message'}</span>
+                <span style={S.msgTag}>{parsed?.messageType || msg.type || 'message'}</span>
+                {parsed?.value && (
+                  <span style={S.taskPill(resultTone(parsed.value))}>{parsed.value}</span>
+                )}
                 <span style={S.msgFrom}>{msg.from || ''}</span>
                 <span style={S.msgTo}>{msg.to || ''}</span>
                 <span style={S.msgTime}>{date} {time}</span>
               </div>
+              {parsed?.summary && (
+                <div style={{...S.msgContent, color: 'var(--text)', marginBottom: 4}}>{parsed.summary}</div>
+              )}
               <div style={S.msgContent}>{msg.content || ''}</div>
             </div>
           );
