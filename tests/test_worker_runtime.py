@@ -12,6 +12,7 @@ from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskStore
 from clawteam.worker_runtime import (
+    _extract_structured_result_sections,
     _infer_terminal_status_from_transcript_tail,
     build_openclaw_agent_command,
     build_worker_task_prompt,
@@ -106,6 +107,29 @@ next_action: move to review
         "QA_RESULT",
         "pass_with_risk",
     )
+
+
+def test_extract_structured_result_sections_for_qa_result():
+    transcript = """
+QA_RESULT
+status: pass_with_risk
+summary: Main goal validated; failed branch not observed.
+evidence:
+- real runtime evidence present
+validation:
+- command output captured
+risk:
+- failed branch remains unvalidated
+next_action: move to review
+"""
+    assert _extract_structured_result_sections(transcript, "QA_RESULT") == {
+        "status": "pass_with_risk",
+        "summary": "Main goal validated; failed branch not observed.",
+        "evidence": "- real runtime evidence present",
+        "validation": "- command output captured",
+        "risk": "- failed branch remains unvalidated",
+        "next_action": "move to review",
+    }
 
 
 def test_build_worker_task_prompt_includes_active_execution_when_claimed(monkeypatch, tmp_path):
