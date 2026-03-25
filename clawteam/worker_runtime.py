@@ -81,6 +81,17 @@ def build_worker_task_prompt(
             f"- Active Execution ID: {task.active_execution_id}",
         ])
 
+    terminal_complete_cmd = f"clawteam task update {team_name} {task.id} --status completed"
+    terminal_fail_cmd = (
+        f"clawteam task update {team_name} {task.id} --status failed "
+        "--failure-kind complex --failure-root-cause \"<cause>\" "
+        "--failure-evidence \"<evidence>\" --failure-recommended-next-owner \"leader\" "
+        "--failure-recommended-action \"<action>\""
+    )
+    if getattr(task, "active_execution_id", ""):
+        terminal_complete_cmd += f" --execution-id {shlex.quote(task.active_execution_id)}"
+        terminal_fail_cmd += f" --execution-id {shlex.quote(task.active_execution_id)}"
+
     lines.extend([
         "",
         "## Required Runtime Protocol",
@@ -90,7 +101,8 @@ def build_worker_task_prompt(
         f"- Use `clawteam inbox receive {team_name} --ack` to consume wake/context messages when needed.",
         f"- If blocked, send a concrete blocker to {leader_name} via `clawteam inbox send {team_name} {leader_name} \"<blocker>\"` and update the task to failed with the correct failure metadata.",
         "- Workflow routing is owned by the leader/template/state machine. Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges unless the leader explicitly told you to do that.",
-        f"- When the task is truly complete, run `clawteam task update {team_name} {task.id} --status completed`.",
+        f"- When the task is truly complete, run `{terminal_complete_cmd}`.",
+        f"- When you must fail the claimed task, use an execution-scoped terminal writeback like `{terminal_fail_cmd}`.",
         f"- Do not pretend success. Use real validation and report exact files, commands, and results.",
         f"- If more context is needed, read your inbox and inspect the workspace before changing code.",
         "- Use structured result blocks instead of free-form prose.",
