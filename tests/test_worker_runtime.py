@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 import clawteam.worker_runtime as worker_runtime
 from clawteam.cli.commands import app
 from clawteam.spawn.subprocess_backend import SubprocessBackend
+from clawteam.task.terminal_commands import build_terminal_task_update_command
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
@@ -54,6 +55,26 @@ def test_build_openclaw_agent_command_uses_headless_agent_mode():
     assert "hello" in cmd
 
 
+def test_build_terminal_task_update_command_prefers_explicit_execution_scope():
+    cmd = build_terminal_task_update_command(
+        team_name="demo team",
+        task_id="task-1",
+        status="failed",
+        execution_id="task-1-exec-2",
+        failure_kind="complex",
+        failure_root_cause="timeout",
+        failure_evidence="watchdog",
+        failure_recommended_next_owner="leader",
+        failure_recommended_action="inspect",
+    )
+    assert cmd == (
+        "clawteam task update 'demo team' task-1 --status failed "
+        "--execution-id task-1-exec-2 --failure-kind complex "
+        "--failure-root-cause timeout --failure-evidence watchdog "
+        "--failure-recommended-next-owner leader --failure-recommended-action inspect"
+    )
+
+
 def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa 1-id")
@@ -90,7 +111,7 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert "QA_RESULT status may be pass, pass_with_risk, fail, or blocked" in prompt
     assert "The task brief in Description is the current scope authority." in prompt
     assert "they do not by themselves approve new endpoints, APIs, schemas, pages, tabs, workflows, or deliverables." in prompt
-    assert f"clawteam task update demo team {task.id} --status completed" in prompt
+    assert build_terminal_task_update_command(team_name="demo team", task_id=task.id, status="completed") in prompt
     assert "--execution-id" not in prompt
 
 
@@ -151,9 +172,23 @@ def test_build_worker_task_prompt_includes_active_execution_when_claimed(monkeyp
     )
 
     assert f"- Active Execution ID: {claimed.active_execution_id}" in prompt
-    assert f"clawteam task update demo {task.id} --status completed --execution-id {claimed.active_execution_id}" in prompt
-    assert f"clawteam task update demo {task.id} --status failed --failure-kind complex" in prompt
-    assert f"--execution-id {claimed.active_execution_id}" in prompt
+    assert build_terminal_task_update_command(
+        team_name="demo",
+        task_id=task.id,
+        status="completed",
+        execution_id=claimed.active_execution_id,
+    ) in prompt
+    assert build_terminal_task_update_command(
+        team_name="demo",
+        task_id=task.id,
+        status="failed",
+        execution_id=claimed.active_execution_id,
+        failure_kind="complex",
+        failure_root_cause="<cause>",
+        failure_evidence="<evidence>",
+        failure_recommended_next_owner="leader",
+        failure_recommended_action="<action>",
+    ) in prompt
 
 
 def test_task_update_cli_prefers_explicit_execution_id_over_env(monkeypatch, tmp_path):
