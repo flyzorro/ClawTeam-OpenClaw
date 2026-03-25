@@ -15,6 +15,7 @@ from typing import Any
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.spawn.registry import unregister_agent
+from clawteam.task.terminal_commands import build_terminal_task_update_command
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
@@ -119,16 +120,23 @@ def build_worker_task_prompt(
             f"- Active Execution ID: {task.active_execution_id}",
         ])
 
-    terminal_complete_cmd = f"clawteam task update {team_name} {task.id} --status completed"
-    terminal_fail_cmd = (
-        f"clawteam task update {team_name} {task.id} --status failed "
-        "--failure-kind complex --failure-root-cause \"<cause>\" "
-        "--failure-evidence \"<evidence>\" --failure-recommended-next-owner \"leader\" "
-        "--failure-recommended-action \"<action>\""
+    terminal_complete_cmd = build_terminal_task_update_command(
+        team_name=team_name,
+        task_id=task.id,
+        status="completed",
+        execution_id=getattr(task, "active_execution_id", ""),
     )
-    if getattr(task, "active_execution_id", ""):
-        terminal_complete_cmd += f" --execution-id {shlex.quote(task.active_execution_id)}"
-        terminal_fail_cmd += f" --execution-id {shlex.quote(task.active_execution_id)}"
+    terminal_fail_cmd = build_terminal_task_update_command(
+        team_name=team_name,
+        task_id=task.id,
+        status="failed",
+        execution_id=getattr(task, "active_execution_id", ""),
+        failure_kind="complex",
+        failure_root_cause="<cause>",
+        failure_evidence="<evidence>",
+        failure_recommended_next_owner="leader",
+        failure_recommended_action="<action>",
+    )
 
     lines.extend([
         "",
