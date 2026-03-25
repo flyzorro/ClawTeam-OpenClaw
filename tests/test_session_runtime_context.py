@@ -76,6 +76,7 @@ def test_inbox_receive_resolves_data_dir_from_session_registry(monkeypatch, tmp_
 def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CLAWTEAM_TASK_EXECUTION_ID", "task-1-exec-9")
+    monkeypatch.setenv("CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH", "/tmp/demo completion.json")
     runner = CliRunner()
     result = runner.invoke(
         app,
@@ -94,7 +95,11 @@ def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
             "/tmp/demo data",
             "--shell",
         ],
-        env={"HOME": str(tmp_path / "home"), "CLAWTEAM_TASK_EXECUTION_ID": "task-1-exec-9"},
+        env={
+            "HOME": str(tmp_path / "home"),
+            "CLAWTEAM_TASK_EXECUTION_ID": "task-1-exec-9",
+            "CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH": "/tmp/demo completion.json",
+        },
     )
 
     assert result.exit_code == 0, result.output
@@ -106,6 +111,7 @@ def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
         "export CLAWTEAM_TEAM_NAME='demo team'",
         "export CLAWTEAM_DATA_DIR='/tmp/demo data'",
         "export CLAWTEAM_TASK_EXECUTION_ID=task-1-exec-9",
+        "export CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH='/tmp/demo completion.json'",
     ]
 
 
