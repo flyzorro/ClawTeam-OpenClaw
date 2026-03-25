@@ -376,8 +376,14 @@ def test_worker_loop_exits_when_team_is_terminal(monkeypatch, tmp_path):
 
     history = worker_loop(team_name="demo", agent_name="qa1", base_command=["openclaw"])
 
+    cleanup_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(worker_runtime, "_cleanup_worker_runtime", lambda team_name, agent_name: cleanup_calls.append((team_name, agent_name)) or {"removed": True, "sessionPruned": False, "remainingAgents": 0})
+
+    history = worker_loop(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
     assert called["iterations"] == 0
-    assert history == [{"status": "team_terminal", "team": "demo", "agent": "qa1"}]
+    assert cleanup_calls == [("demo", "qa1")]
+    assert history == [{"status": "team_terminal", "team": "demo", "agent": "qa1", "cleanup": {"removed": True, "sessionPruned": False, "remainingAgents": 0}}]
 
 
 def test_worker_loop_exits_after_consecutive_idle_wait(monkeypatch, tmp_path):
@@ -393,14 +399,18 @@ def test_worker_loop_exits_after_consecutive_idle_wait(monkeypatch, tmp_path):
     ])
     times = iter([100.0, 101.2, 101.2])
 
+    cleanup_calls: list[tuple[str, str]] = []
+
     monkeypatch.setattr(worker_runtime, "run_worker_iteration", lambda *args, **kwargs: next(results))
     monkeypatch.setattr(worker_runtime, "_team_is_terminal", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(worker_runtime, "_cleanup_worker_runtime", lambda team_name, agent_name: cleanup_calls.append((team_name, agent_name)) or {"removed": True, "sessionPruned": False, "remainingAgents": 0})
     monkeypatch.setattr(worker_runtime.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(worker_runtime.time, "sleep", lambda *_args, **_kwargs: None)
 
     history = worker_loop(team_name="demo", agent_name="qa1", base_command=["openclaw"])
 
     assert [item["status"] for item in history] == ["waiting_for_wake", "waiting_for_wake", "idle_exit"]
+    assert cleanup_calls == [("demo", "qa1")]
     assert history[-1]["team"] == "demo"
     assert history[-1]["agent"] == "qa1"
     assert history[-1]["idleSeconds"] >= 1.0

@@ -14,6 +14,7 @@ from typing import Any
 
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.spawn.cli_env import resolve_clawteam_executable
+from clawteam.spawn.registry import unregister_agent
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
@@ -510,6 +511,12 @@ def _team_is_terminal(team_name: str) -> bool:
     return all(task.status in terminal_statuses for task in tasks)
 
 
+def _cleanup_worker_runtime(team_name: str, agent_name: str) -> dict[str, Any]:
+    data_dir = os.environ.get("CLAWTEAM_DATA_DIR", "")
+    session_key = os.environ.get("OPENCLAW_SESSION_KEY", "") or f"clawteam-{team_name}-{agent_name}"
+    return unregister_agent(team_name, agent_name, data_dir, session_key=session_key)
+
+
 def _fail_claimed_task(
     *,
     team_name: str,
@@ -906,10 +913,12 @@ def worker_loop(
     idle_statuses = {"idle", "waiting_for_wake"}
     while True:
         if _team_is_terminal(team_name):
+            cleanup = _cleanup_worker_runtime(team_name, agent_name)
             history.append({
                 "status": "team_terminal",
                 "team": team_name,
                 "agent": agent_name,
+                "cleanup": cleanup,
             })
             return history
         result = run_worker_iteration(
@@ -925,11 +934,13 @@ def worker_loop(
             if idle_started_at is None:
                 idle_started_at = time.monotonic()
             elif idle_exit_timeout > 0 and (time.monotonic() - idle_started_at) >= idle_exit_timeout:
+                cleanup = _cleanup_worker_runtime(team_name, agent_name)
                 history.append({
                     "status": "idle_exit",
                     "team": team_name,
                     "agent": agent_name,
                     "idleSeconds": round(time.monotonic() - idle_started_at, 3),
+                    "cleanup": cleanup,
                 })
                 return history
         else:
