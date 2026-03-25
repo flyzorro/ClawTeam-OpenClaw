@@ -12,6 +12,7 @@ from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskStore
 from clawteam.worker_runtime import (
+    _infer_terminal_status_from_transcript_tail,
     build_openclaw_agent_command,
     build_worker_task_prompt,
     clear_replaced_worker_unfinished_tasks,
@@ -81,9 +82,30 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert "Do not create repair/retry/review tasks or mutate blocked_by/on_fail edges" in prompt
     assert "Use structured result blocks instead of free-form prose" in prompt
     assert "QA_RESULT must include exactly these headings" in prompt
+    assert "QA_RESULT status may be pass, pass_with_risk, fail, or blocked" in prompt
     assert "The task brief in Description is the current scope authority." in prompt
     assert "they do not by themselves approve new endpoints, APIs, schemas, pages, tabs, workflows, or deliverables." in prompt
     assert "Example completion envelope command: `python3 - <<'PY'" in prompt
+
+
+def test_infer_terminal_status_from_transcript_tail_accepts_qa_pass_with_risk():
+    transcript = """
+QA_RESULT
+status: pass_with_risk
+summary: Main goal validated; failed branch not observed.
+evidence:
+- real runtime evidence present
+validation:
+- command output captured
+risk:
+- failed branch remains unvalidated
+next_action: move to review
+"""
+    assert _infer_terminal_status_from_transcript_tail(transcript) == (
+        TaskStatus.completed,
+        "QA_RESULT",
+        "pass_with_risk",
+    )
 
 
 def test_build_worker_task_prompt_includes_active_execution_when_claimed(monkeypatch, tmp_path):
