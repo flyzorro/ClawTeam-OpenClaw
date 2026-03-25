@@ -10,6 +10,7 @@ import os
 import shlex
 
 from clawteam.spawn.cli_env import resolve_clawteam_executable
+from clawteam.task.terminal_commands import build_terminal_task_update_command
 
 
 def build_agent_prompt(
@@ -80,6 +81,35 @@ def build_agent_prompt(
             f"- Use `memory_store` with scope `{memory_scope}` for team-shared knowledge.",
             f"- Use `memory_recall` to access memories stored by other team members in this scope.",
         ])
+    complete_task_cmd = build_terminal_task_update_command(
+        executable=clawteam_bin,
+        team_name=team_name,
+        task_id="<task-id>",
+        status="completed",
+        execution_id=task_execution_id,
+    )
+    regular_fail_cmd = build_terminal_task_update_command(
+        executable=clawteam_bin,
+        team_name=team_name,
+        task_id="<task-id>",
+        status="failed",
+        execution_id=task_execution_id,
+        failure_kind="regular",
+        failure_note="<evidence>",
+    )
+    complex_fail_cmd = build_terminal_task_update_command(
+        executable=clawteam_bin,
+        team_name=team_name,
+        task_id="<task-id>",
+        status="failed",
+        execution_id=task_execution_id,
+        failure_kind="complex",
+        failure_root_cause="<cause>",
+        failure_evidence="<evidence>",
+        failure_recommended_next_owner="<owner>",
+        failure_recommended_action="<action>",
+    )
+
     lines.extend([
         "",
         "## Task\n",
@@ -120,10 +150,10 @@ def build_agent_prompt(
         f"  `{identity_prefix} {clawteam_cmd} task list {team_name} --owner {agent_name}`",
         f"- Use `{identity_prefix} {clawteam_cmd} task list {team_name} --owner {agent_name}` to see your tasks.",
         f"- Starting a task: `{identity_prefix} {clawteam_cmd} task update {team_name} <task-id> --status in_progress`",
-        f"- Finishing a task: `{identity_prefix} {clawteam_cmd} task update {team_name} <task-id> --status completed`",
+        f"- Finishing a task: `{identity_prefix} {complete_task_cmd}`",
         "- Do not use `task create`, `--add-blocked-by`, or `--add-on-fail` to improvise workflow routing unless the leader explicitly tells you to change topology.",
-        f"- Regular fail with clear retry route: `{identity_prefix} {clawteam_cmd} task update {team_name} <task-id> --status failed --failure-kind regular --failure-note \"<evidence>\"`",
-        f"- Complex fail needing leader decision: `{identity_prefix} {clawteam_cmd} task update {team_name} <task-id> --status failed --failure-kind complex --failure-root-cause \"<cause>\" --failure-evidence \"<evidence>\" --failure-recommended-next-owner \"<owner>\" --failure-recommended-action \"<action>\"`",
+        f"- Regular fail with clear retry route: `{identity_prefix} {regular_fail_cmd}`",
+        f"- Complex fail needing leader decision: `{identity_prefix} {complex_fail_cmd}`",
         "- When you finish all tasks, send a summary to the leader:",
         f'  `{identity_prefix} {clawteam_cmd} inbox send {team_name} {leader_name} "All tasks completed. <brief summary>"`',
         "- If you are blocked or need help, message the leader:",
