@@ -1014,6 +1014,10 @@ def task_update(
                     console.print(f"  Workspace: {d['spawn']['cwd']}")
             else:
                 console.print("  Respawned: no")
+            if d.get("replacementReason"):
+                console.print(f"  Replacement reason: {d['replacementReason']}")
+            if d.get("replacedExecutionId"):
+                console.print(f"  Replaced execution: {d['replacedExecutionId']}")
             if d.get("replacementRequired"):
                 console.print(
                     f"  Replacement cleanup: cleared {len(d.get('clearedTaskIds', []))} unfinished task(s); "
@@ -1089,6 +1093,10 @@ def task_release(
                 console.print(f"  Workspace: {d['spawn']['cwd']}")
         else:
             console.print("  Respawned: no")
+        if d.get("replacementReason"):
+            console.print(f"  Replacement reason: {d['replacementReason']}")
+        if d.get("replacedExecutionId"):
+            console.print(f"  Replaced execution: {d['replacedExecutionId']}")
         if d.get("replacementRequired"):
             console.print(
                 f"  Replacement cleanup: cleared {len(d.get('clearedTaskIds', []))} unfinished task(s); "

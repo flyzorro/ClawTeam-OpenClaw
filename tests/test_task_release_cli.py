@@ -7,7 +7,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from clawteam.cli.commands import app
-from clawteam.runtime.orchestrator import RuntimeOrchestrator
+from clawteam.runtime.orchestrator import RuntimeOrchestrator, _plan_replacement
 from clawteam.services.task_service import (
     TaskReleaseContext,
     TaskReleaseRequest,
@@ -70,6 +70,52 @@ def _team_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
+def _worker_env(base_env: dict[str, str], *, agent_name: str, agent_id: str, execution_id: str) -> dict[str, str]:
+    return {
+        **base_env,
+        "CLAWTEAM_AGENT_NAME": agent_name,
+        "CLAWTEAM_AGENT_ID": agent_id,
+        "CLAWTEAM_AGENT_TYPE": "general-purpose",
+        "CLAWTEAM_AGENT_LEADER": "0",
+        "CLAWTEAM_TASK_EXECUTION_ID": execution_id,
+    }
+
+
+def test_plan_replacement_requires_replacement_for_stale_execution(tmp_path, monkeypatch):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    task = TaskStore("demo").create("Functional QA", owner="qa1")
+    task = TaskStore("demo").update(task.id, status=TaskStatus.in_progress, caller="qa1")
+
+    decision = _plan_replacement(task=task, state_before="stale", respawn=True)
+
+    assert decision.owner == "qa1"
+    assert decision.replacement_required is True
+    assert decision.replaced_execution_id == task.active_execution_id
+    assert decision.reason == "stale"
+
+
+def test_plan_replacement_preserves_never_started_missing_owner(tmp_path, monkeypatch):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    task = TaskStore("demo").create("Functional QA", owner="qa1")
+
+    decision = _plan_replacement(task=task, state_before="missing", respawn=True)
+
+    assert decision.owner == "qa1"
+    assert decision.replacement_required is False
+    assert decision.replaced_execution_id is None
+    assert decision.reason == "missing"
+
+
 def test_runtime_orchestrator_release_to_owner_respawns_missing_owner(monkeypatch, tmp_path):
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
@@ -93,6 +139,14 @@ def test_runtime_orchestrator_release_to_owner_respawns_missing_owner(monkeypatc
 
     assert release["respawned"] is True
     assert release["replacementRequired"] is False
+    assert release["replacementReason"] == "missing"
+    assert release["replacedExecutionId"] is None
+    assert release["replacement"] == {
+        "owner": "qa1",
+        "replacement_required": False,
+        "replaced_execution_id": None,
+        "reason": "missing",
+    }
     assert len(backend.calls) == 1
     call = backend.calls[0]
     assert call["agent_name"] == "qa1"
@@ -133,6 +187,45 @@ def test_runtime_orchestrator_respawn_reuses_pinned_clawteam_bin(monkeypatch, tm
     assert len(backend.calls) == 1
     call = backend.calls[0]
     assert call["env"]["CLAWTEAM_BIN"] == str(pinned)
+
+
+def test_runtime_orchestrator_release_to_owner_exposes_replacement_decision(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", description="Check company directory", owner="qa1")
+    task = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
+
+    workspace = tmp_path / "qa1-worktree"
+    workspace.mkdir()
+    _write_workspace_registry("demo", "qa1", workspace, tmp_path)
+
+    backend = RecordingBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.registry.get_agent_runtime_state", lambda *_: "stale")
+    monkeypatch.setattr("clawteam.spawn.registry.terminate_agent", lambda *_: True)
+
+    orchestrator = RuntimeOrchestrator(team="demo", repo=str(tmp_path))
+    release = orchestrator.release_to_owner(task, caller="leader", message="Start immediately", respawn=True)
+
+    assert release["messageSent"] is False
+    assert release["replacementRequired"] is True
+    assert release["replacementReason"] == "stale"
+    assert release["replacedExecutionId"] == task.active_execution_id
+    assert release["replacement"] == {
+        "owner": "qa1",
+        "replacement_required": True,
+        "replaced_execution_id": task.active_execution_id,
+        "reason": "stale",
+    }
+    assert release["terminatedStale"] is True
+    assert release["respawned"] is True
+    assert len(backend.calls) == 1
+
 
 
 def test_execute_task_release_uses_injected_context(monkeypatch, tmp_path):
@@ -270,6 +363,8 @@ def test_task_release_respawns_dead_owner_before_wake(monkeypatch, tmp_path):
     assert call["cwd"] == str(workspace)
     assert "previous worker runtime was replaced" in call["prompt"]
     assert "Do not resume old work" in call["prompt"]
+    assert "Replacement reason: dead" in result.output
+    assert "Replacement cleanup: cleared 1 unfinished task(s); leader must re-dispatch" in result.output
     assert "send" not in call_order
     assert store.get(task.id) is None
 
@@ -386,6 +481,7 @@ def test_task_complete_auto_notifies_and_respawns_unblocked_owner(monkeypatch, t
 
     store = TaskStore("demo")
     impl = store.create("Implement fix", owner="dev1")
+    impl = store.update(impl.id, status=TaskStatus.in_progress, caller="dev1")
     qa = store.create("Regression QA", description="Verify the fix", owner="qa1", blocked_by=[impl.id])
 
     workspace = tmp_path / "qa1-worktree"
@@ -400,7 +496,7 @@ def test_task_complete_auto_notifies_and_respawns_unblocked_owner(monkeypatch, t
     result = runner.invoke(
         app,
         ["task", "update", "demo", impl.id, "--status", "completed"],
-        env=env,
+        env=_worker_env(env, agent_name="dev1", agent_id="dev1-id", execution_id=impl.active_execution_id or ""),
     )
 
     assert result.exit_code == 0, result.output
@@ -438,7 +534,7 @@ def test_task_failed_auto_notifies_and_respawns_reopened_owner(monkeypatch, tmp_
     )
     store.update(impl.id, status=TaskStatus.completed)
     with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
-        store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
+        qa = store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
 
     workspace = tmp_path / "dev1-worktree"
     workspace.mkdir()
@@ -457,7 +553,7 @@ def test_task_failed_auto_notifies_and_respawns_reopened_owner(monkeypatch, tmp_
             "--failure-kind", "regular",
             "--failure-note", "Repro is clear; send back to implement",
         ],
-        env=env,
+        env=_worker_env(env, agent_name="qa1", agent_id="qa1-id", execution_id=qa.active_execution_id or ""),
     )
 
     assert result.exit_code == 0, result.output
@@ -511,7 +607,8 @@ def test_task_failed_without_actual_qa_start_does_not_reopen_owner(monkeypatch, 
         env=env,
     )
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
+    assert "execution_id_required" in result.output
     assert len(backend.calls) == 0
 
     impl_after = TaskStore("demo").get(impl.id)
@@ -541,7 +638,7 @@ def test_task_failed_complex_does_not_reopen_owner_even_after_actual_start(monke
     )
     store.update(impl.id, status=TaskStatus.completed)
     with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
-        store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
+        qa = store.update(qa.id, status=TaskStatus.in_progress, caller="qa1")
 
     backend = RecordingBackend()
     monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
@@ -559,7 +656,7 @@ def test_task_failed_complex_does_not_reopen_owner_even_after_actual_start(monke
             "--failure-recommended-next-owner", "leader",
             "--failure-recommended-action", "Decide whether dev1 or dev2 owns the follow-up",
         ],
-        env=env,
+        env=_worker_env(env, agent_name="qa1", agent_id="qa1-id", execution_id=qa.active_execution_id or ""),
     )
 
     assert result.exit_code == 0, result.output
@@ -585,6 +682,7 @@ def test_task_update_failed_complex_notifies_leader(monkeypatch, tmp_path):
 
     store = TaskStore("demo")
     task = store.create("Regression QA", owner="qa1")
+    task = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -598,7 +696,7 @@ def test_task_update_failed_complex_notifies_leader(monkeypatch, tmp_path):
             "--failure-recommended-next-owner", "leader",
             "--failure-recommended-action", "Decide whether dev1 or dev2 owns the next fix",
         ],
-        env=env,
+        env=_worker_env(env, agent_name="qa1", agent_id="qa1-id", execution_id=task.active_execution_id or ""),
     )
 
     assert result.exit_code == 0, result.output
@@ -626,6 +724,7 @@ def test_task_update_failed_regular_does_not_notify_leader(monkeypatch, tmp_path
 
     store = TaskStore("demo")
     task = store.create("Regression QA", owner="qa1")
+    task = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -640,7 +739,7 @@ def test_task_update_failed_regular_does_not_notify_leader(monkeypatch, tmp_path
             "--failure-recommended-next-owner", "dev1",
             "--failure-recommended-action", "Fix API contract and rerun QA",
         ],
-        env=env,
+        env=_worker_env(env, agent_name="qa1", agent_id="qa1-id", execution_id=task.active_execution_id or ""),
     )
 
     assert result.exit_code == 0, result.output
