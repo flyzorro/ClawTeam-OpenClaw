@@ -377,6 +377,35 @@ _RESULT_BLOCK_PATTERNS: list[tuple[str, re.Pattern[str], dict[str, TaskStatus]]]
 ]
 
 
+def _normalize_result_text(value: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", value.strip())
+
+
+def _extract_structured_result_sections(transcript_tail: str, block_name: str) -> dict[str, str] | None:
+    normalized = "\n".join(
+        part for part in (_extract_text_from_transcript_line(line) for line in transcript_tail.splitlines()) if part
+    )
+    heading_pattern = re.compile(rf"{re.escape(block_name)}\s+", re.IGNORECASE)
+    heading_match = heading_pattern.search(normalized)
+    if not heading_match:
+        return None
+    body = normalized[heading_match.end():]
+    section_pattern = re.compile(
+        r"(?im)^(status|summary|changed_files|evidence|validation|known_issues|risk|next_action|decision|architecture_review|required_fixes):\s*"
+    )
+    matches = list(section_pattern.finditer(body))
+    if not matches:
+        return None
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        key = str(match.group(1) or "").strip().lower()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        value = _normalize_result_text(body[start:end])
+        sections[key] = value
+    return sections or None
+
+
 def _infer_terminal_status_from_transcript_tail(transcript_tail: str) -> tuple[TaskStatus, str, str] | None:
     normalized = "\n".join(
         part for part in (_extract_text_from_transcript_line(line) for line in transcript_tail.splitlines()) if part
@@ -824,6 +853,15 @@ def run_worker_iteration(
                     recovery_metadata["runtime_terminal_recovery_signal_version"] = str(signal_payload.version)
                 if fallback_mode:
                     recovery_metadata["runtime_terminal_recovery_compatibility_fallback"] = "true"
+                structured_sections = _extract_structured_result_sections(transcript_tail, result_type)
+                if structured_sections:
+                    normalized_result_type = result_type.lower()
+                    recovery_metadata[f"{normalized_result_type}_sections"] = structured_sections
+                    if result_type == "QA_RESULT":
+                        recovery_metadata["qa_result"] = structured_sections
+                        recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
+                        recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
+                        recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
                 recovered_decision, recovered_task, recovered_apply = store.apply_runtime_terminal_writeback(
                     claimed.id,
                     status=inferred_status,
