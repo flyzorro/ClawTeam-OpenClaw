@@ -31,5 +31,7 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert "Workflow topology belongs to the leader/template/state machine" in prompt
     assert "Do not use `task create`, `--add-blocked-by`, or `--add-on-fail`" in prompt
     assert "Use structured result blocks instead of free-form prose" in prompt
+    assert "SETUP_RESULT must include exactly these headings" in prompt
+    assert "SETUP_RESULT remote_status must be confirmed_latest, cached_only, or unreachable" in prompt
     assert "REVIEW_RESULT must include exactly these headings" in prompt
     assert "architecture_review" in prompt

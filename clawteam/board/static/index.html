@@ -311,7 +311,7 @@ function parseStructuredResult(content) {
   const header = (lines[0] || '').trim();
   if (!header) return null;
 
-  const messageType = ['QA_RESULT', 'DEV_RESULT', 'REVIEW_RESULT'].includes(header)
+  const messageType = ['SETUP_RESULT', 'QA_RESULT', 'DEV_RESULT', 'REVIEW_RESULT'].includes(header)
     ? header
     : null;
   if (!messageType) return null;
