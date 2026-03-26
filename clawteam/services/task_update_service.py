@@ -54,6 +54,22 @@ def _extract_structured_sections(description: str) -> dict[str, str]:
     return sections
 
 
+def _looks_like_sha(value: str) -> bool:
+    candidate = (value or "").strip()
+    return bool(re.fullmatch(r"[0-9a-fA-F]{7,40}", candidate))
+
+
+def _looks_like_command_evidence_block(value: str) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return any(
+        line.startswith("-") and ("->" in line or ":" in line)
+        for line in lines
+    )
+
+
 def _validate_setup_completion(existing: TaskItem, request: TaskUpdateRequest) -> None:
     if request.status != TaskStatus.completed:
         return
@@ -81,6 +97,36 @@ def _validate_setup_completion(existing: TaskItem, request: TaskUpdateRequest) -
     if remote_status not in {"confirmed_latest", "cached_only", "unreachable"}:
         raise TaskTransitionValidationError(
             "setup completion requires remote_status to be one of: confirmed_latest, cached_only, unreachable"
+        )
+
+    remote_head = sections.get("remote_head", "").strip()
+    if remote_head.lower() == "none":
+        if remote_status == "confirmed_latest":
+            raise TaskTransitionValidationError("setup completion cannot use remote_head none when remote_status=confirmed_latest")
+    elif not _looks_like_sha(remote_head):
+        raise TaskTransitionValidationError("setup completion requires remote_head to look like a git sha or `none`")
+
+    detached_worktree = sections.get("detached_worktree", "").strip()
+    if detached_worktree.lower() == "none":
+        raise TaskTransitionValidationError("setup completion requires detached_worktree evidence; `none` is not allowed")
+
+    detached_head = sections.get("detached_head", "").strip()
+    if detached_head.lower() == "none" or not _looks_like_sha(detached_head):
+        raise TaskTransitionValidationError("setup completion requires detached_head to look like a git sha")
+
+    install_block = sections.get("install", "")
+    if not _looks_like_command_evidence_block(install_block):
+        raise TaskTransitionValidationError("setup completion requires install evidence in `- <command> -> <result>` form")
+
+    baseline_block = sections.get("baseline_validation", "")
+    if not _looks_like_command_evidence_block(baseline_block):
+        raise TaskTransitionValidationError(
+            "setup completion requires baseline_validation evidence in `- <command> -> <result>` form"
+        )
+
+    if remote_status == "confirmed_latest" and "ls-remote" not in description:
+        raise TaskTransitionValidationError(
+            "setup completion with remote_status=confirmed_latest requires explicit `git ls-remote` evidence"
         )
 
 
