@@ -486,6 +486,39 @@ def _infer_terminal_status_from_completion_signal(
     return inferred, result_type, signal.terminal_status
 
 
+_UPSTREAM_ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"An error occurred while processing your request", re.IGNORECASE),
+    re.compile(r"request ID\s+[0-9a-f-]{8,}", re.IGNORECASE),
+    re.compile(r"LLM request failed", re.IGNORECASE),
+    re.compile(r"network connection error", re.IGNORECASE),
+    re.compile(r"upstream request failed", re.IGNORECASE),
+    re.compile(r"502\b"),
+    re.compile(r"503\b"),
+    re.compile(r"504\b"),
+)
+
+
+def _infer_upstream_failure_evidence(*parts: str) -> str:
+    snippets: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        normalized = text if len(text) <= 4000 else text[-4000:]
+        if any(pattern.search(normalized) for pattern in _UPSTREAM_ERROR_PATTERNS):
+            snippets.append(normalized)
+    if not snippets:
+        return ""
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for snippet in snippets:
+        if snippet in seen:
+            continue
+        seen.add(snippet)
+        deduped.append(snippet)
+    return "\n---\n".join(deduped)
+
+
 def _configure_nonblocking_text_pipe(pipe: TextIOBase | None) -> None:
     if pipe is None:
         return
@@ -1020,15 +1053,26 @@ def run_worker_iteration(
             if result.stdout:
                 evidence_parts.append(f"stdout: {result.stdout.strip()}")
             evidence_parts.append(f"transcript_tail:\n{transcript_tail}")
+            upstream_failure_evidence = _infer_upstream_failure_evidence(
+                result.stderr,
+                result.stdout,
+                transcript_tail,
+            )
+            failure_reason = "worker agent turn stalled without terminal task update"
+            stall_phase = "post_exit_without_terminal_update"
+            if upstream_failure_evidence:
+                failure_reason = "worker agent turn failed before terminal task update"
+                stall_phase = "post_exit_upstream_failure_without_terminal_update"
+                evidence_parts.append(f"upstream_failure_evidence:\n{upstream_failure_evidence}")
             failed = _fail_claimed_task(
                 team_name=team_name,
                 agent_name=agent_name,
                 task_id=claimed.id,
-                reason="worker agent turn stalled without terminal task update",
+                reason=failure_reason,
                 evidence="\n".join(evidence_parts),
                 execution_id=claimed.active_execution_id,
                 session_key=session_key,
-                stall_phase="post_exit_without_terminal_update",
+                stall_phase=stall_phase,
             )
             failed.update({
                 "messages": message_count,
