@@ -1022,6 +1022,72 @@ def test_execute_task_update_effects_auto_creates_blocked_triage_followup(monkey
     assert "define reproducible upstream failure path" in triage.description
 
 
+def test_execute_task_update_effects_reuses_existing_triage_without_rerelease(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    blocked = store.create(
+        "Regression QA",
+        owner="qa1",
+        metadata={
+            "blocked_root_cause": "unable to reproduce upstream failure",
+            "blocked_evidence": "timeout only; no upstream-provider evidence",
+            "blocked_recommended_next_owner": "leader",
+            "blocked_recommended_action": "define reproducible upstream failure path",
+        },
+    )
+    existing_triage = store.create(
+        "Triage blocked task: Regression QA",
+        owner="leader",
+        metadata={"triage_followup": "true", "triage_source_task_id": blocked.id},
+    )
+    blocked = store.update(
+        blocked.id,
+        status=TaskStatus.blocked,
+        caller="qa1",
+        metadata={
+            "blocked_root_cause": "unable to reproduce upstream failure",
+            "blocked_evidence": "timeout only; no upstream-provider evidence",
+            "blocked_recommended_next_owner": "leader",
+            "blocked_recommended_action": "define reproducible upstream failure path",
+            "triage_followup_task_id": existing_triage.id,
+        },
+    )
+
+    class FakeRuntime:
+        def __init__(self):
+            self.calls = []
+
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            self.calls.append({"taskId": task.id, "owner": task.owner, "message": message})
+            return {"taskId": task.id, "owner": task.owner, "message": message, "respawned": False}
+
+    runtime = FakeRuntime()
+    effects = execute_task_update_effects(
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=runtime,
+            release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+            failure_notifier=lambda *args, **kwargs: None,
+        ),
+        task=blocked,
+        caller="qa1",
+        wake_owner=False,
+        message="",
+        dependent_ids_to_wake=[],
+        failed_targets_to_wake=[],
+    )
+
+    assert effects.triage_release is None
+    assert runtime.calls == []
+    blocked_after = store.get(blocked.id)
+    assert blocked_after.metadata["triage_followup_task_id"] == existing_triage.id
+
+
 def test_build_dependency_completion_message_includes_structured_qa_context(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 

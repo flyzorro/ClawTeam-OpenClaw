@@ -342,12 +342,12 @@ def _build_failure_reopen_message(failed_task: TaskItem, target: TaskItem) -> st
     return "\n".join(parts)
 
 
-def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[TaskItem, str] | tuple[None, None]:
+def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[TaskItem, str, bool] | tuple[None, None, bool]:
     metadata = task.metadata if isinstance(task.metadata, dict) else {}
     is_complex_failure = task.status == TaskStatus.failed and metadata.get("failure_kind") == "complex"
     is_blocked = task.status == TaskStatus.blocked
     if not is_complex_failure and not is_blocked:
-        return None, None
+        return None, None, False
 
     owner_key = "failure_recommended_next_owner" if is_complex_failure else "blocked_recommended_next_owner"
     action_key = "failure_recommended_action" if is_complex_failure else "blocked_recommended_action"
@@ -360,7 +360,7 @@ def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[Task
     next_owner = str(metadata.get(owner_key) or "").strip()
     next_action = str(metadata.get(action_key) or "").strip()
     if not next_owner or not next_action:
-        return None, None
+        return None, None, False
     if TeamManager.get_member(ctx.team, next_owner) is None:
         fallback_leader = TeamManager.get_leader_name(ctx.team) or "leader"
         next_owner = fallback_leader
@@ -369,7 +369,7 @@ def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[Task
     if existing_followup_id:
         existing_followup = ctx.store.get(existing_followup_id)
         if existing_followup is not None:
-            return existing_followup, next_owner
+            return existing_followup, next_owner, False
 
     root_cause = str(metadata.get(root_key) or "").strip() or "Unspecified"
     evidence = str(metadata.get(evidence_key) or "").strip() or "No evidence provided."
@@ -403,7 +403,7 @@ def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[Task
     patched_metadata = dict(metadata)
     patched_metadata["triage_followup_task_id"] = triage.id
     ctx.store.update(task.id, metadata=patched_metadata)
-    return triage, next_owner
+    return triage, next_owner, True
 
 
 def execute_task_update_effects(
@@ -466,8 +466,8 @@ def execute_task_update_effects(
         )
 
     triage_release = None
-    triage_task, _triage_owner = _build_triage_followup(task, ctx)
-    if triage_task is not None and triage_task.owner:
+    triage_task, _triage_owner, triage_created = _build_triage_followup(task, ctx)
+    if triage_task is not None and triage_task.owner and triage_created:
         try:
             triage_release = ctx.runtime.release_to_owner(
                 triage_task,
