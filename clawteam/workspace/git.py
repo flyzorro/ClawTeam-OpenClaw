@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
 class GitError(Exception):
     """Raised when a git command fails."""
+
+
+@dataclass(frozen=True)
+class RemoteProbeResult:
+    remote_status: str
+    remote_head: str
+    evidence: str
 
 
 def _run(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
@@ -132,3 +140,67 @@ def diff_stat(worktree_path: Path) -> str:
     if unstaged:
         parts.append(f"Unstaged:\n{unstaged}")
     return "\n".join(parts) if parts else "Clean — no changes."
+
+
+def probe_remote_head(
+    repo: Path,
+    *,
+    remote: str,
+    branch: str,
+    timeout_seconds: float = 30.0,
+) -> RemoteProbeResult:
+    """Probe a remote head with fail-closed classification.
+
+    Returns:
+    - confirmed_latest + sha when `git ls-remote --heads` succeeds with a parseable sha
+    - cached_only + `none` when the probe times out
+    - unreachable + `none` when the command fails or returns malformed output
+    """
+    command = ["git", "ls-remote", "--heads", remote, branch]
+    quoted = " ".join(command)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=True,
+        )
+    except subprocess.TimeoutExpired:
+        return RemoteProbeResult(
+            remote_status="cached_only",
+            remote_head="none",
+            evidence=f"{quoted} -> timed out after {timeout_seconds:g}s",
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip() or f"exit {exc.returncode}"
+        return RemoteProbeResult(
+            remote_status="unreachable",
+            remote_head="none",
+            evidence=f"{quoted} -> {stderr}",
+        )
+
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        return RemoteProbeResult(
+            remote_status="unreachable",
+            remote_head="none",
+            evidence=f"{quoted} -> empty output",
+        )
+
+    line = stdout.splitlines()[0].strip()
+    parts = line.split()
+    sha = parts[0] if parts else ""
+    if len(sha) >= 7 and all(ch in "0123456789abcdefABCDEF" for ch in sha):
+        return RemoteProbeResult(
+            remote_status="confirmed_latest",
+            remote_head=sha.lower(),
+            evidence=f"{quoted} -> {line}",
+        )
+
+    return RemoteProbeResult(
+        remote_status="unreachable",
+        remote_head="none",
+        evidence=f"{quoted} -> malformed output: {line}",
+    )

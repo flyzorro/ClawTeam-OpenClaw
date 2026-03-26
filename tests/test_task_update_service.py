@@ -20,6 +20,7 @@ from clawteam.services.task_update_service import (
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskStore, TransitionApplyResult
+from clawteam.workspace.git import probe_remote_head
 
 
 def test_task_update_result_explicit_transition_case_wins_over_apply_result(monkeypatch, tmp_path):
@@ -692,6 +693,53 @@ next_action: handoff to implement
 
     assert result.task.status == TaskStatus.completed
     assert result.task.description.startswith("SETUP_RESULT")
+
+
+def test_probe_remote_head_classifies_timeout_as_cached_only(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=kwargs.get("args", args[0] if args else ["git"]), timeout=30)
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = probe_remote_head(tmp_path, remote="flyzorro", branch="main", timeout_seconds=30)
+
+    assert result.remote_status == "cached_only"
+    assert result.remote_head == "none"
+    assert "timed out after 30s" in result.evidence
+    assert "git ls-remote --heads flyzorro main" in result.evidence
+
+
+def test_probe_remote_head_classifies_command_failure_as_unreachable(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        raise subprocess.CalledProcessError(returncode=128, cmd=["git"], stderr="Could not resolve host")
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = probe_remote_head(tmp_path, remote="flyzorro", branch="main", timeout_seconds=30)
+
+    assert result.remote_status == "unreachable"
+    assert result.remote_head == "none"
+    assert "Could not resolve host" in result.evidence
+
+
+def test_probe_remote_head_classifies_success_as_confirmed_latest(monkeypatch, tmp_path):
+    class Completed:
+        def __init__(self):
+            self.stdout = "51a0127\trefs/heads/main\n"
+
+    def fake_run(*args, **kwargs):
+        return Completed()
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = probe_remote_head(tmp_path, remote="flyzorro", branch="main", timeout_seconds=30)
+
+    assert result.remote_status == "confirmed_latest"
+    assert result.remote_head == "51a0127"
+    assert "51a0127\trefs/heads/main" in result.evidence
 
 
 def test_execute_task_update_reopen_with_patch_preserves_transition_result(monkeypatch, tmp_path):
