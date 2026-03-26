@@ -757,6 +757,137 @@ def _build_failure_terminal_intent(
     )
 
 
+def _classify_dispatch_exception_as_terminal_intent(
+    *,
+    task_id: str,
+    execution_id: str | None,
+    session_key: str,
+    exc: Exception,
+) -> TerminalIntent:
+    reason = "worker runtime dispatch failed"
+    stall_phase = "dispatch"
+    source: Literal[
+        "watchdog_runtime_progress_stall",
+        "watchdog_total_timeout",
+        "dispatch_failure",
+    ] = "dispatch_failure"
+    if isinstance(exc, TimeoutError) and "stalled without runtime progress" in str(exc):
+        reason = "worker agent turn stalled without runtime progress"
+        stall_phase = "dispatch_runtime_progress_stall"
+        source = "watchdog_runtime_progress_stall"
+    elif isinstance(exc, TimeoutError) and "exceeded total timeout" in str(exc):
+        reason = "worker agent turn exceeded total timeout"
+        stall_phase = "dispatch_total_timeout"
+        source = "watchdog_total_timeout"
+    return _build_failure_terminal_intent(
+        task_id=task_id,
+        execution_id=execution_id,
+        reason=reason,
+        evidence=repr(exc),
+        source=source,
+        session_key=session_key,
+        stall_phase=stall_phase,
+    )
+
+
+def _build_recovery_terminal_intent(
+    *,
+    task_id: str,
+    execution_id: str | None,
+    session_key: str,
+    recovery_source: str,
+    inferred_status: TaskStatus,
+    result_type: str,
+    terminal_status_value: str,
+    transcript_tail: str,
+    signal_payload: RuntimeCompletionEnvelope | None,
+) -> TerminalIntent:
+    recovery_metadata = {
+        "runtime_terminal_recovery": recovery_source,
+        "runtime_terminal_recovery_result_type": result_type,
+        "runtime_terminal_recovery_terminal_status": terminal_status_value,
+        "runtime_terminal_recovery_session_key": session_key,
+        "runtime_terminal_recovery_at": _now_iso(),
+    }
+    if signal_payload is not None and recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE:
+        recovery_metadata["runtime_terminal_recovery_signal_version"] = str(signal_payload.version)
+    if recovery_source == COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE:
+        recovery_metadata["runtime_terminal_recovery_compatibility_fallback"] = "true"
+    structured_sections = _extract_structured_result_sections(transcript_tail, result_type)
+    if structured_sections:
+        normalized_result_type = result_type.lower()
+        recovery_metadata[f"{normalized_result_type}_sections"] = structured_sections
+        if result_type == "QA_RESULT":
+            recovery_metadata["qa_result"] = structured_sections
+            recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
+            recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
+            recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
+    return TerminalIntent(
+        task_id=task_id,
+        execution_id=execution_id,
+        terminal_status=inferred_status,
+        reason=f"runtime terminal recovered from {recovery_source}",
+        evidence=transcript_tail,
+        source=(
+            "completion_envelope"
+            if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
+            else "transcript_result_block_temporary_compatibility"
+        ),
+        metadata=recovery_metadata,
+        session_key=session_key,
+        result_type=result_type,
+        authoritative=recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE,
+        fallback_case_name="worker_runtime_transcript_terminal_recovery",
+    )
+
+
+def _classify_missing_terminal_post_exit_as_terminal_intent(
+    *,
+    task_id: str,
+    execution_id: str | None,
+    session_key: str,
+    settled: bool,
+    settle_timeout_seconds: float,
+    settle_progress_grace_seconds: float,
+    result: subprocess.CompletedProcess[str],
+    transcript_tail: str,
+) -> TerminalIntent:
+    evidence_parts = [
+        "openclaw agent returned success but task remained in_progress and locked to the same worker",
+        f"session_key={session_key}",
+        f"post_exit_settled={settled}",
+        f"post_exit_settle_timeout_seconds={settle_timeout_seconds}",
+        f"post_exit_progress_grace_seconds={settle_progress_grace_seconds}",
+    ]
+    if result.stderr:
+        evidence_parts.append(f"stderr: {result.stderr.strip()}")
+    if result.stdout:
+        evidence_parts.append(f"stdout: {result.stdout.strip()}")
+    evidence_parts.append(f"transcript_tail:\n{transcript_tail}")
+    upstream_failure_evidence = _infer_upstream_failure_evidence(
+        result.stderr,
+        result.stdout,
+        transcript_tail,
+    )
+    failure_reason = "worker agent turn stalled without terminal task update"
+    stall_phase = "post_exit_without_terminal_update"
+    source: Literal["post_exit_missing_terminal", "post_exit_upstream_failure"] = "post_exit_missing_terminal"
+    if upstream_failure_evidence:
+        failure_reason = "worker agent turn failed before terminal task update"
+        stall_phase = "post_exit_upstream_failure_without_terminal_update"
+        source = "post_exit_upstream_failure"
+        evidence_parts.append(f"upstream_failure_evidence:\n{upstream_failure_evidence}")
+    return _build_failure_terminal_intent(
+        task_id=task_id,
+        execution_id=execution_id,
+        reason=failure_reason,
+        evidence="\n".join(evidence_parts),
+        source=source,
+        session_key=session_key,
+        stall_phase=stall_phase,
+    )
+
+
 def apply_terminal_intent(
     *,
     team_name: str,
@@ -953,30 +1084,14 @@ def run_worker_iteration(
             progress_poll_interval_seconds=progress_poll_interval_seconds,
         )
     except Exception as exc:
-        reason = "worker runtime dispatch failed"
-        stall_phase = "dispatch"
-        if isinstance(exc, TimeoutError) and "stalled without runtime progress" in str(exc):
-            reason = "worker agent turn stalled without runtime progress"
-            stall_phase = "dispatch_runtime_progress_stall"
-        elif isinstance(exc, TimeoutError) and "exceeded total timeout" in str(exc):
-            reason = "worker agent turn exceeded total timeout"
-            stall_phase = "dispatch_total_timeout"
-        failure_source = "dispatch_failure"
-        if stall_phase == "dispatch_runtime_progress_stall":
-            failure_source = "watchdog_runtime_progress_stall"
-        elif stall_phase == "dispatch_total_timeout":
-            failure_source = "watchdog_total_timeout"
         failed = apply_terminal_intent(
             team_name=team_name,
             agent_name=agent_name,
-            intent=_build_failure_terminal_intent(
+            intent=_classify_dispatch_exception_as_terminal_intent(
                 task_id=claimed.id,
                 execution_id=claimed.active_execution_id,
-                reason=reason,
-                evidence=repr(exc),
-                source=failure_source,
                 session_key=session_key,
-                stall_phase=stall_phase,
+                exc=exc,
             ),
         )
         failed.update({
@@ -1054,58 +1169,30 @@ def run_worker_iteration(
                 execution_id=claimed.active_execution_id,
             )
             recovery_source = COMPLETION_SIGNAL_PRIMARY_SOURCE
-            fallback_mode = False
             if inferred_terminal is None:
                 # Temporary compatibility fallback only: transcript parsing is evidence/debugging-oriented and
                 # must not become the formal completion authority.
                 transcript_tail = _read_transcript_tail(session_key)
                 inferred_terminal = _infer_terminal_status_from_transcript_tail(transcript_tail)
                 recovery_source = COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE
-                fallback_mode = inferred_terminal is not None
             else:
                 transcript_tail = _read_transcript_tail(session_key)
 
             if inferred_terminal is not None:
                 inferred_status, result_type, terminal_status_value = inferred_terminal
-                recovery_metadata = {
-                    "runtime_terminal_recovery": recovery_source,
-                    "runtime_terminal_recovery_result_type": result_type,
-                    "runtime_terminal_recovery_terminal_status": terminal_status_value,
-                    "runtime_terminal_recovery_session_key": session_key,
-                    "runtime_terminal_recovery_at": _now_iso(),
-                }
-                if signal_payload is not None and recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE:
-                    recovery_metadata["runtime_terminal_recovery_signal_version"] = str(signal_payload.version)
-                if fallback_mode:
-                    recovery_metadata["runtime_terminal_recovery_compatibility_fallback"] = "true"
-                structured_sections = _extract_structured_result_sections(transcript_tail, result_type)
-                if structured_sections:
-                    normalized_result_type = result_type.lower()
-                    recovery_metadata[f"{normalized_result_type}_sections"] = structured_sections
-                    if result_type == "QA_RESULT":
-                        recovery_metadata["qa_result"] = structured_sections
-                        recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
-                        recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
-                        recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
                 recovered = apply_terminal_intent(
                     team_name=team_name,
                     agent_name=agent_name,
-                    intent=TerminalIntent(
+                    intent=_build_recovery_terminal_intent(
                         task_id=claimed.id,
                         execution_id=claimed.active_execution_id,
-                        terminal_status=inferred_status,
-                        reason=f"runtime terminal recovered from {recovery_source}",
-                        evidence=transcript_tail,
-                        source=(
-                            "completion_envelope"
-                            if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
-                            else "transcript_result_block_temporary_compatibility"
-                        ),
-                        metadata=recovery_metadata,
                         session_key=session_key,
+                        recovery_source=recovery_source,
+                        inferred_status=inferred_status,
                         result_type=result_type,
-                        authoritative=recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE,
-                        fallback_case_name="worker_runtime_transcript_terminal_recovery",
+                        terminal_status_value=terminal_status_value,
+                        transcript_tail=transcript_tail,
+                        signal_payload=signal_payload,
                     ),
                 )
                 if recovered["status"] in {"terminal_applied", "already_terminal"}:
@@ -1128,44 +1215,18 @@ def run_worker_iteration(
                         "taskStatus": recovered.get("terminalStatus") or recovered.get("taskStatus") or inferred_status.value,
                     }
 
-            evidence_parts = [
-                "openclaw agent returned success but task remained in_progress and locked to the same worker",
-                f"session_key={session_key}",
-                f"post_exit_settled={settled}",
-                f"post_exit_settle_timeout_seconds={settle_timeout_seconds}",
-                f"post_exit_progress_grace_seconds={settle_progress_grace_seconds}",
-            ]
-            if result.stderr:
-                evidence_parts.append(f"stderr: {result.stderr.strip()}")
-            if result.stdout:
-                evidence_parts.append(f"stdout: {result.stdout.strip()}")
-            evidence_parts.append(f"transcript_tail:\n{transcript_tail}")
-            upstream_failure_evidence = _infer_upstream_failure_evidence(
-                result.stderr,
-                result.stdout,
-                transcript_tail,
-            )
-            failure_reason = "worker agent turn stalled without terminal task update"
-            stall_phase = "post_exit_without_terminal_update"
-            if upstream_failure_evidence:
-                failure_reason = "worker agent turn failed before terminal task update"
-                stall_phase = "post_exit_upstream_failure_without_terminal_update"
-                evidence_parts.append(f"upstream_failure_evidence:\n{upstream_failure_evidence}")
             failed = apply_terminal_intent(
                 team_name=team_name,
                 agent_name=agent_name,
-                intent=_build_failure_terminal_intent(
+                intent=_classify_missing_terminal_post_exit_as_terminal_intent(
                     task_id=claimed.id,
                     execution_id=claimed.active_execution_id,
-                    reason=failure_reason,
-                    evidence="\n".join(evidence_parts),
-                    source=(
-                        "post_exit_upstream_failure"
-                        if upstream_failure_evidence
-                        else "post_exit_missing_terminal"
-                    ),
                     session_key=session_key,
-                    stall_phase=stall_phase,
+                    settled=settled,
+                    settle_timeout_seconds=settle_timeout_seconds,
+                    settle_progress_grace_seconds=settle_progress_grace_seconds,
+                    result=result,
+                    transcript_tail=transcript_tail,
                 ),
             )
             failed.update({
