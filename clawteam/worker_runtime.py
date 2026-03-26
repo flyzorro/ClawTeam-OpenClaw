@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.spawn.cli_env import resolve_clawteam_executable
@@ -50,6 +50,30 @@ class RuntimeCompletionEnvelope:
     result_type: str = ""
     result_payload: Any | None = None
     emitted_at: str = ""
+
+
+@dataclass(frozen=True)
+class TerminalIntent:
+    task_id: str
+    execution_id: str | None
+    terminal_status: TaskStatus
+    reason: str
+    evidence: str
+    source: Literal[
+        "completion_envelope",
+        "transcript_result_block_temporary_compatibility",
+        "watchdog_runtime_progress_stall",
+        "watchdog_total_timeout",
+        "dispatch_failure",
+        "agent_exit_nonzero",
+        "post_exit_missing_terminal",
+        "post_exit_upstream_failure",
+    ]
+    metadata: dict[str, Any] | None = None
+    session_key: str | None = None
+    result_type: str = ""
+    authoritative: bool = False
+    fallback_case_name: str = "worker_runtime_terminal_intent"
 
 
 @dataclass
@@ -691,18 +715,23 @@ def _cleanup_worker_runtime(team_name: str, agent_name: str) -> dict[str, Any]:
     return unregister_agent(team_name, agent_name, data_dir, session_key=session_key)
 
 
-def _fail_claimed_task(
+def _build_failure_terminal_intent(
     *,
-    team_name: str,
-    agent_name: str,
     task_id: str,
+    execution_id: str | None,
     reason: str,
     evidence: str,
-    execution_id: str | None = None,
+    source: Literal[
+        "watchdog_runtime_progress_stall",
+        "watchdog_total_timeout",
+        "dispatch_failure",
+        "agent_exit_nonzero",
+        "post_exit_missing_terminal",
+        "post_exit_upstream_failure",
+    ],
     session_key: str | None = None,
     stall_phase: str | None = None,
-) -> dict[str, Any]:
-    store = TaskStore(team_name)
+) -> TerminalIntent:
     failure_metadata = {
         "failure_kind": "complex",
         "failure_root_cause": reason,
@@ -715,43 +744,78 @@ def _fail_claimed_task(
         failure_metadata["session_key"] = session_key
     if stall_phase:
         failure_metadata["stall_phase"] = stall_phase
-    decision, task, apply_result = store.apply_runtime_terminal_writeback(
-        task_id,
-        status=TaskStatus.failed,
-        caller=agent_name,
+    return TerminalIntent(
+        task_id=task_id,
         execution_id=execution_id,
+        terminal_status=TaskStatus.failed,
+        reason=reason,
+        evidence=evidence,
+        source=source,
         metadata=failure_metadata,
+        session_key=session_key,
         fallback_case_name="worker_runtime_failed_closed",
     )
+
+
+def apply_terminal_intent(
+    *,
+    team_name: str,
+    agent_name: str,
+    intent: TerminalIntent,
+) -> dict[str, Any]:
+    store = TaskStore(team_name)
+    decision, task, apply_result = store.apply_runtime_terminal_writeback(
+        intent.task_id,
+        status=intent.terminal_status,
+        caller=agent_name,
+        execution_id=intent.execution_id,
+        metadata=dict(intent.metadata or {}),
+        fallback_case_name=intent.fallback_case_name,
+    )
+    current_task = apply_result.task if apply_result is not None else task
     if decision and not decision.accepted:
         if decision.rejection_reason == DUPLICATE_TERMINAL_SAME_STATUS:
             return {
                 "status": "already_terminal",
-                "taskId": task_id,
-                "reason": reason,
-                "evidence": evidence,
+                "taskId": intent.task_id,
+                "reason": intent.reason,
+                "evidence": intent.evidence,
                 "rejectionReason": decision.rejection_reason,
                 "terminalStatus": task.status.value if task is not None else "",
+                "intentSource": intent.source,
             }
         if decision.rejection_reason == DUPLICATE_TERMINAL_CONFLICTING_STATUS:
             return {
                 "status": "duplicate_terminal",
-                "taskId": task_id,
-                "reason": reason,
-                "evidence": evidence,
+                "taskId": intent.task_id,
+                "reason": intent.reason,
+                "evidence": intent.evidence,
                 "rejectionReason": decision.rejection_reason,
                 "terminalStatus": task.status.value if task is not None else "",
+                "intentSource": intent.source,
             }
-    failure_notice = None
-    task = apply_result.task if apply_result is not None else task
-    if task is not None:
-        failure_notice = notify_task_failure(team_name, task, agent_name)
+
+    if intent.terminal_status == TaskStatus.failed:
+        failure_notice = None
+        if current_task is not None:
+            failure_notice = notify_task_failure(team_name, current_task, agent_name)
+        return {
+            "status": "failed_closed",
+            "taskId": intent.task_id,
+            "failureNotice": failure_notice,
+            "reason": intent.reason,
+            "evidence": intent.evidence,
+            "intentSource": intent.source,
+        }
+
     return {
-        "status": "failed_closed",
-        "taskId": task_id,
-        "failureNotice": failure_notice,
-        "reason": reason,
-        "evidence": evidence,
+        "status": "terminal_applied",
+        "taskId": intent.task_id,
+        "terminalStatus": intent.terminal_status.value,
+        "reason": intent.reason,
+        "evidence": intent.evidence,
+        "intentSource": intent.source,
+        "taskStatus": current_task.status.value if current_task is not None else intent.terminal_status.value,
     }
 
 
@@ -897,15 +961,23 @@ def run_worker_iteration(
         elif isinstance(exc, TimeoutError) and "exceeded total timeout" in str(exc):
             reason = "worker agent turn exceeded total timeout"
             stall_phase = "dispatch_total_timeout"
-        failed = _fail_claimed_task(
+        failure_source = "dispatch_failure"
+        if stall_phase == "dispatch_runtime_progress_stall":
+            failure_source = "watchdog_runtime_progress_stall"
+        elif stall_phase == "dispatch_total_timeout":
+            failure_source = "watchdog_total_timeout"
+        failed = apply_terminal_intent(
             team_name=team_name,
             agent_name=agent_name,
-            task_id=claimed.id,
-            reason=reason,
-            evidence=repr(exc),
-            execution_id=claimed.active_execution_id,
-            session_key=session_key,
-            stall_phase=stall_phase,
+            intent=_build_failure_terminal_intent(
+                task_id=claimed.id,
+                execution_id=claimed.active_execution_id,
+                reason=reason,
+                evidence=repr(exc),
+                source=failure_source,
+                session_key=session_key,
+                stall_phase=stall_phase,
+            ),
         )
         failed.update({
             "messages": message_count,
@@ -922,15 +994,18 @@ def run_worker_iteration(
         if result.stdout:
             evidence_parts.append(f"stdout: {result.stdout.strip()}")
         evidence = "\n".join(part for part in evidence_parts if part) or f"returncode={result.returncode}"
-        failed = _fail_claimed_task(
+        failed = apply_terminal_intent(
             team_name=team_name,
             agent_name=agent_name,
-            task_id=claimed.id,
-            reason="worker agent turn failed",
-            evidence=evidence,
-            execution_id=claimed.active_execution_id,
-            session_key=session_key,
-            stall_phase="agent_exit_nonzero",
+            intent=_build_failure_terminal_intent(
+                task_id=claimed.id,
+                execution_id=claimed.active_execution_id,
+                reason="worker agent turn failed",
+                evidence=evidence,
+                source="agent_exit_nonzero",
+                session_key=session_key,
+                stall_phase="agent_exit_nonzero",
+            ),
         )
         failed.update({
             "messages": message_count,
@@ -1012,16 +1087,28 @@ def run_worker_iteration(
                         recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
                         recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
                         recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
-                recovered_decision, recovered_task, recovered_apply = store.apply_runtime_terminal_writeback(
-                    claimed.id,
-                    status=inferred_status,
-                    caller=agent_name,
-                    execution_id=claimed.active_execution_id,
-                    metadata=recovery_metadata,
-                    fallback_case_name="worker_runtime_transcript_terminal_recovery",
+                recovered = apply_terminal_intent(
+                    team_name=team_name,
+                    agent_name=agent_name,
+                    intent=TerminalIntent(
+                        task_id=claimed.id,
+                        execution_id=claimed.active_execution_id,
+                        terminal_status=inferred_status,
+                        reason=f"runtime terminal recovered from {recovery_source}",
+                        evidence=transcript_tail,
+                        source=(
+                            "completion_envelope"
+                            if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
+                            else "transcript_result_block_temporary_compatibility"
+                        ),
+                        metadata=recovery_metadata,
+                        session_key=session_key,
+                        result_type=result_type,
+                        authoritative=recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE,
+                        fallback_case_name="worker_runtime_transcript_terminal_recovery",
+                    ),
                 )
-                if recovered_decision is None or recovered_decision.accepted:
-                    terminal_task = recovered_apply.task if recovered_apply is not None else recovered_task
+                if recovered["status"] in {"terminal_applied", "already_terminal"}:
                     return {
                         "status": "recovered_terminal",
                         "messages": message_count,
@@ -1038,7 +1125,7 @@ def run_worker_iteration(
                         "recoveredStatus": inferred_status.value,
                         "recoveredFrom": result_type,
                         "recoverySource": recovery_source,
-                        "taskStatus": terminal_task.status.value if terminal_task is not None else inferred_status.value,
+                        "taskStatus": recovered.get("terminalStatus") or recovered.get("taskStatus") or inferred_status.value,
                     }
 
             evidence_parts = [
@@ -1064,15 +1151,22 @@ def run_worker_iteration(
                 failure_reason = "worker agent turn failed before terminal task update"
                 stall_phase = "post_exit_upstream_failure_without_terminal_update"
                 evidence_parts.append(f"upstream_failure_evidence:\n{upstream_failure_evidence}")
-            failed = _fail_claimed_task(
+            failed = apply_terminal_intent(
                 team_name=team_name,
                 agent_name=agent_name,
-                task_id=claimed.id,
-                reason=failure_reason,
-                evidence="\n".join(evidence_parts),
-                execution_id=claimed.active_execution_id,
-                session_key=session_key,
-                stall_phase=stall_phase,
+                intent=_build_failure_terminal_intent(
+                    task_id=claimed.id,
+                    execution_id=claimed.active_execution_id,
+                    reason=failure_reason,
+                    evidence="\n".join(evidence_parts),
+                    source=(
+                        "post_exit_upstream_failure"
+                        if upstream_failure_evidence
+                        else "post_exit_missing_terminal"
+                    ),
+                    session_key=session_key,
+                    stall_phase=stall_phase,
+                ),
             )
             failed.update({
                 "messages": message_count,
