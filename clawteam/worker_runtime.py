@@ -888,6 +888,41 @@ def _classify_missing_terminal_post_exit_as_terminal_intent(
     )
 
 
+def build_recovered_terminal_result(
+    *,
+    claimed_task: Any,
+    claim_case: str,
+    message_count: int,
+    acked_count: int,
+    command: list[str],
+    session_key: str,
+    result: subprocess.CompletedProcess[str],
+    recovery_source: str,
+    inferred_status: TaskStatus,
+    result_type: str,
+    applied_result: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "status": "recovered_terminal",
+        "messages": message_count,
+        "acked": acked_count,
+        "taskId": claimed_task.id,
+        "executionId": claimed_task.active_execution_id,
+        "executionSeq": claimed_task.execution_seq,
+        "claimCase": claim_case,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "command": command,
+        "sessionKey": session_key,
+        "recoveredStatus": inferred_status.value,
+        "recoveredFrom": result_type,
+        "recoverySource": recovery_source,
+        "taskStatus": applied_result.get("terminalStatus") or applied_result.get("taskStatus") or inferred_status.value,
+        "intentSource": applied_result.get("intentSource", ""),
+    }
+
+
 def apply_terminal_intent(
     *,
     team_name: str,
@@ -1196,24 +1231,19 @@ def run_worker_iteration(
                     ),
                 )
                 if recovered["status"] in {"terminal_applied", "already_terminal"}:
-                    return {
-                        "status": "recovered_terminal",
-                        "messages": message_count,
-                        "acked": acked_count,
-                        "taskId": claimed.id,
-                        "executionId": claimed.active_execution_id,
-                        "executionSeq": claimed.execution_seq,
-                        "claimCase": claim_result.case_name,
-                        "returncode": result.returncode,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "command": command,
-                        "sessionKey": session_key,
-                        "recoveredStatus": inferred_status.value,
-                        "recoveredFrom": result_type,
-                        "recoverySource": recovery_source,
-                        "taskStatus": recovered.get("terminalStatus") or recovered.get("taskStatus") or inferred_status.value,
-                    }
+                    return build_recovered_terminal_result(
+                        claimed_task=claimed,
+                        claim_case=claim_result.case_name,
+                        message_count=message_count,
+                        acked_count=acked_count,
+                        command=command,
+                        session_key=session_key,
+                        result=result,
+                        recovery_source=recovery_source,
+                        inferred_status=inferred_status,
+                        result_type=result_type,
+                        applied_result=recovered,
+                    )
 
             failed = apply_terminal_intent(
                 team_name=team_name,

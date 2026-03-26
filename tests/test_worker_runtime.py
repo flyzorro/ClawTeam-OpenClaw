@@ -23,6 +23,7 @@ from clawteam.worker_runtime import (
     _infer_terminal_status_from_transcript_tail,
     _infer_upstream_failure_evidence,
     build_openclaw_agent_command,
+    build_recovered_terminal_result,
     build_worker_task_prompt,
     clear_replaced_worker_unfinished_tasks,
     detect_worker_replacement,
@@ -255,6 +256,38 @@ def test_classify_missing_terminal_post_exit_as_upstream_failure_intent():
     assert intent.metadata is not None
     assert intent.metadata["stall_phase"] == "post_exit_upstream_failure_without_terminal_update"
     assert "upstream_failure_evidence:" in intent.evidence
+
+
+
+def test_build_recovered_terminal_result_preserves_apply_and_recovery_fields(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    claimed = TaskStore("demo").claim_execution(task.id, caller="qa1").task
+
+    result = build_recovered_terminal_result(
+        claimed_task=claimed,
+        claim_case="claim_pending_task",
+        message_count=2,
+        acked_count=1,
+        command=["openclaw", "agent"],
+        session_key="clawteam-demo-qa1",
+        result=_Completed(returncode=0, stdout="ok", stderr=""),
+        recovery_source="runtime_completion_envelope",
+        inferred_status=TaskStatus.completed,
+        result_type="DEV_RESULT",
+        applied_result={
+            "status": "terminal_applied",
+            "taskStatus": "completed",
+            "intentSource": "completion_envelope",
+        },
+    )
+
+    assert result["status"] == "recovered_terminal"
+    assert result["taskId"] == task.id
+    assert result["recoveredFrom"] == "DEV_RESULT"
+    assert result["recoverySource"] == "runtime_completion_envelope"
+    assert result["taskStatus"] == "completed"
+    assert result["intentSource"] == "completion_envelope"
 
 
 
