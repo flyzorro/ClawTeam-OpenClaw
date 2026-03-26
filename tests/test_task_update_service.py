@@ -933,11 +933,15 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
         lambda *args, **kwargs: [{"taskId": impl.id, "owner": "dev1", "respawned": False}],
     )
 
+    class FakeRuntime:
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            return {"taskId": task.id, "owner": task.owner, "message": message, "respawned": False}
+
     effects = execute_task_update_effects(
         ctx=TaskUpdateContext(
             store=store,
             team="demo",
-            runtime=RuntimeOrchestrator(team="demo"),
+            runtime=FakeRuntime(),
             release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
             failure_notifier=fake_notifier,
         ),
@@ -955,7 +959,67 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
     assert effects.failure_notice is not None
     assert effects.failure_notice["failureNotice"] == "sent"
     assert effects.failure_notice["failureLeader"] == "leader"
+    assert effects.triage_release is not None
+    triage_id = store.get(qa.id).metadata.get("triage_followup_task_id")
+    triage = store.get(str(triage_id))
+    assert triage is not None
+    assert triage.owner == "leader"
+    assert triage.status.value == "pending"
+    assert triage.metadata["triage_source_task_id"] == qa.id
+    assert "triage owner" in triage.description
     assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
+
+
+def test_execute_task_update_effects_auto_creates_blocked_triage_followup(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    blocked = store.create("Regression QA", owner="qa1")
+    blocked = store.update(
+        blocked.id,
+        status=TaskStatus.blocked,
+        caller="qa1",
+        metadata={
+            "blocked_root_cause": "unable to reproduce upstream failure",
+            "blocked_evidence": "timeout only; no upstream-provider evidence",
+            "blocked_recommended_next_owner": "leader",
+            "blocked_recommended_action": "define reproducible upstream failure path",
+        },
+    )
+
+    class FakeRuntime:
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            return {"taskId": task.id, "owner": task.owner, "message": message, "respawned": False}
+
+    effects = execute_task_update_effects(
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=FakeRuntime(),
+            release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+            failure_notifier=lambda *args, **kwargs: None,
+        ),
+        task=blocked,
+        caller="qa1",
+        wake_owner=False,
+        message="",
+        dependent_ids_to_wake=[],
+        failed_targets_to_wake=[],
+    )
+
+    assert effects.failure_notice is None
+    assert effects.triage_release is not None
+    blocked_after = store.get(blocked.id)
+    triage_id = blocked_after.metadata.get("triage_followup_task_id")
+    triage = store.get(str(triage_id))
+    assert triage is not None
+    assert triage.owner == "leader"
+    assert triage.subject.startswith("Triage blocked task:")
+    assert triage.metadata["triage_source_task_id"] == blocked.id
+    assert "define reproducible upstream failure path" in triage.description
 
 
 def test_build_dependency_completion_message_includes_structured_qa_context(monkeypatch, tmp_path):
