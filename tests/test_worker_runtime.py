@@ -16,6 +16,9 @@ from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskStore
 from clawteam.worker_runtime import (
+    _classify_dispatch_exception_as_terminal_intent,
+    _classify_missing_terminal_post_exit_as_terminal_intent,
+    _build_recovery_terminal_intent,
     _extract_structured_result_sections,
     _infer_terminal_status_from_transcript_tail,
     _infer_upstream_failure_evidence,
@@ -184,6 +187,74 @@ def test_infer_upstream_failure_evidence_matches_provider_error_text():
 
     assert "An error occurred while processing your request" in evidence
     assert "ced3f6d9-893e-4c49-b8e9-cc031acdf6ae" in evidence
+
+
+def test_classify_dispatch_exception_as_runtime_progress_stall_intent():
+    intent = _classify_dispatch_exception_as_terminal_intent(
+        task_id="task-1",
+        execution_id="exec-1",
+        session_key="clawteam-demo-qa1",
+        exc=TimeoutError("worker agent turn stalled without runtime progress"),
+    )
+
+    assert intent.terminal_status == TaskStatus.failed
+    assert intent.source == "watchdog_runtime_progress_stall"
+    assert intent.reason == "worker agent turn stalled without runtime progress"
+    assert intent.metadata is not None
+    assert intent.metadata["stall_phase"] == "dispatch_runtime_progress_stall"
+
+
+
+def test_build_recovery_terminal_intent_marks_transcript_fallback_non_authoritative():
+    intent = _build_recovery_terminal_intent(
+        task_id="task-1",
+        execution_id="exec-1",
+        session_key="clawteam-demo-qa1",
+        recovery_source=worker_runtime.COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE,
+        inferred_status=TaskStatus.completed,
+        result_type="QA_RESULT",
+        terminal_status_value="pass_with_risk",
+        transcript_tail=(
+            "QA_RESULT\n"
+            "status: pass_with_risk\n"
+            "summary: done\n"
+            "evidence:\n- proof\n"
+            "validation:\n- test\n"
+            "risk:\n- residual\n"
+            "next_action: review\n"
+        ),
+        signal_payload=None,
+    )
+
+    assert intent.source == "transcript_result_block_temporary_compatibility"
+    assert intent.authoritative is False
+    assert intent.metadata is not None
+    assert intent.metadata["runtime_terminal_recovery_compatibility_fallback"] == "true"
+    assert intent.metadata["qa_result_status"] == "pass_with_risk"
+
+
+
+def test_classify_missing_terminal_post_exit_as_upstream_failure_intent():
+    intent = _classify_missing_terminal_post_exit_as_terminal_intent(
+        task_id="task-1",
+        execution_id="exec-1",
+        session_key="clawteam-demo-qa1",
+        settled=True,
+        settle_timeout_seconds=15.0,
+        settle_progress_grace_seconds=3.0,
+        result=_Completed(
+            returncode=0,
+            stdout="An error occurred while processing your request. Please include the request ID abc in your message.",
+            stderr="",
+        ),
+        transcript_tail="",
+    )
+
+    assert intent.source == "post_exit_upstream_failure"
+    assert intent.reason == "worker agent turn failed before terminal task update"
+    assert intent.metadata is not None
+    assert intent.metadata["stall_phase"] == "post_exit_upstream_failure_without_terminal_update"
+    assert "upstream_failure_evidence:" in intent.evidence
 
 
 
