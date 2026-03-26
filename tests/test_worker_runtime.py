@@ -18,6 +18,7 @@ from clawteam.team.tasks import TaskStore
 from clawteam.worker_runtime import (
     _extract_structured_result_sections,
     _infer_terminal_status_from_transcript_tail,
+    _infer_upstream_failure_evidence,
     build_openclaw_agent_command,
     build_worker_task_prompt,
     clear_replaced_worker_unfinished_tasks,
@@ -172,6 +173,18 @@ next_action: move to review
         "risk": "- failed branch remains unvalidated",
         "next_action": "move to review",
     }
+
+
+def test_infer_upstream_failure_evidence_matches_provider_error_text():
+    evidence = _infer_upstream_failure_evidence(
+        "",
+        "An error occurred while processing your request. Please include the request ID ced3f6d9-893e-4c49-b8e9-cc031acdf6ae in your message.",
+        "",
+    )
+
+    assert "An error occurred while processing your request" in evidence
+    assert "ced3f6d9-893e-4c49-b8e9-cc031acdf6ae" in evidence
+
 
 
 def test_build_worker_task_prompt_includes_active_execution_when_claimed(monkeypatch, tmp_path):
@@ -1048,6 +1061,57 @@ def test_run_worker_iteration_fails_closed_when_agent_returns_success_without_te
     assert updated.metadata["failure_root_cause"] == "worker agent turn stalled without terminal task update"
     assert "task remained in_progress" in updated.metadata["failure_evidence"]
     assert "transcript_tail:" in updated.metadata["failure_evidence"]
+
+
+
+def test_run_worker_iteration_classifies_upstream_error_before_terminal_writeback(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa1-id")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    mailbox = MailboxManager("demo")
+    task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
+    mailbox.send("leader", "qa1", "start now", key=f"task-wake:{task.id}", last_task=task.id)
+
+    transcript_dir = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    (transcript_dir / "clawteam-demo-qa1.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","content":"An error occurred while processing your request. Please include the request ID ced3f6d9-893e-4c49-b8e9-cc031acdf6ae in your message."}}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        worker_runtime,
+        "_run_agent_with_progress_watchdog",
+        lambda *args, **kwargs: _Completed(
+            returncode=0,
+            stdout="",
+            stderr="An error occurred while processing your request. Please include the request ID ced3f6d9-893e-4c49-b8e9-cc031acdf6ae in your message.",
+        ),
+    )
+    monkeypatch.setattr(
+        worker_runtime,
+        "_wait_for_post_exit_settle",
+        lambda **kwargs: (TaskStore("demo").get(task.id), False),
+    )
+
+    result = run_worker_iteration(team_name="demo", agent_name="qa1", base_command=["openclaw"])
+
+    assert result["status"] == "failed_closed"
+    assert result["taskId"] == task.id
+    assert result["reason"] == "worker agent turn failed before terminal task update"
+    assert result["sessionKey"] == "clawteam-demo-qa1"
+
+    updated = TaskStore("demo").get(task.id)
+    assert updated is not None
+    assert updated.status.value == "failed"
+    assert updated.locked_by == ""
+    assert updated.metadata["failure_root_cause"] == "worker agent turn failed before terminal task update"
+    assert updated.metadata["stall_phase"] == "post_exit_upstream_failure_without_terminal_update"
+    assert "upstream_failure_evidence:" in updated.metadata["failure_evidence"]
+    assert "ced3f6d9-893e-4c49-b8e9-cc031acdf6ae" in updated.metadata["failure_evidence"]
 
 
 def test_progress_watchdog_raises_when_transcript_stalls(monkeypatch, tmp_path):
