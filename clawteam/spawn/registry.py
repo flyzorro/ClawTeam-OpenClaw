@@ -92,6 +92,7 @@ def register_agent(
     runtime_generation: str | None = None,
     worker_instance_id: str | None = None,
     clawteam_bin: str = "",
+    cwd: str = "",
 ) -> None:
     """Record spawn info for an agent (atomic write)."""
     resolved_data_dir = str(_normalize_data_dir(data_dir))
@@ -112,6 +113,7 @@ def register_agent(
         "runtime_generation": current_runtime_generation() if runtime_generation is None else runtime_generation,
         "worker_instance_id": worker_instance_id or new_worker_instance_id(agent_name),
         "clawteam_bin": clawteam_bin,
+        "cwd": str(Path(cwd).expanduser().resolve()) if cwd else "",
     }
     _save(path, registry)
 

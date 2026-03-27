@@ -2717,8 +2717,8 @@ def launch_team(
             agent_name=agent.name,
         )
 
-        # Workspace
-        cwd = None
+        # Workspace / repo binding
+        cwd = str(Path(repo).expanduser().resolve()) if repo and not ws_mgr else None
         ws_branch = ""
         if ws_mgr:
             ws_info = ws_mgr.create_workspace(

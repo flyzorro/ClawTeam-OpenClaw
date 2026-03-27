@@ -91,6 +91,36 @@ def test_launch_template_post_scope_only_materializes_scope_root(monkeypatch, tm
     assert "create the full task chain, blocked_by edges, and on_fail edges up front" not in leader_prompt
 
 
+def test_launch_template_binds_repo_as_cwd_without_workspace(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
+    backend = DummyBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+
+    repo = tmp_path / "target-repo"
+    repo.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "launch",
+            "five-step-delivery",
+            "--team-name",
+            "delivery-demo-repo",
+            "--goal",
+            "Ship the feature safely",
+            "--repo",
+            str(repo),
+            "--no-workspace",
+        ],
+        env={"CLAWTEAM_DATA_DIR": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert backend.calls
+    assert {call["cwd"] for call in backend.calls} == {str(repo.resolve())}
+
+
 def test_launch_template_fails_closed_when_agent_spawn_errors(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: FailingBackend())

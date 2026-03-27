@@ -258,11 +258,12 @@ def _spawn_existing_agent(
         skip_permissions = str(skip_permissions_value).lower() not in ("false", "0", "no", "")
 
     workspace = _load_workspace_info(team_name, agent_name)
-    cwd = workspace.worktree_path if workspace else (str(Path(repo).resolve()) if repo else None)
+    existing_record = get_agent_record(team_name, agent_name)
+    registry_cwd = str(Path(existing_record.get("cwd")).expanduser().resolve()) if existing_record and existing_record.get("cwd") else None
+    cwd = workspace.worktree_path if workspace else (str(Path(repo).resolve()) if repo else registry_cwd)
     workspace_branch = workspace.branch_name if workspace else ""
 
     pinned_env: dict[str, str] = {}
-    existing_record = get_agent_record(team_name, agent_name)
     pinned_bin = str((existing_record or {}).get("clawteam_bin") or os.environ.get("CLAWTEAM_BIN") or "").strip()
     if pinned_bin:
         pinned_env["CLAWTEAM_BIN"] = pinned_bin

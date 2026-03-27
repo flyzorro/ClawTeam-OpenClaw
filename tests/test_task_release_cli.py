@@ -331,6 +331,53 @@ def test_task_release_respawns_dead_owner_in_existing_workspace(monkeypatch, tmp
     assert any("Start immediately" in (msg.content or "") for msg in messages)
 
 
+def test_task_release_respawns_dead_owner_uses_registry_cwd_without_workspace(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    repo = tmp_path / "target-repo"
+    repo.mkdir()
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", description="Check company directory", owner="qa1")
+
+    from clawteam.spawn.registry import register_agent
+
+    register_agent(
+        team_name="demo",
+        agent_name="qa1",
+        backend="subprocess",
+        pid=12345,
+        command=["openclaw"],
+        agent_id="qa1-id",
+        agent_type="general-purpose",
+        data_dir=env["CLAWTEAM_DATA_DIR"],
+        cwd=str(repo),
+    )
+
+    backend = RecordingBackend()
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.registry.get_agent_runtime_state", lambda *_: "dead")
+    monkeypatch.setattr("clawteam.spawn.registry.terminate_agent", lambda *_: True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["task", "release", "demo", task.id, "--message", "Start immediately"],
+        env=env,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(backend.calls) == 1
+    call = backend.calls[0]
+    assert call["agent_name"] == "qa1"
+    assert call["cwd"] == str(repo.resolve())
+    assert str(repo.resolve()) in call["prompt"]
+
+
 def test_task_release_respawns_dead_owner_before_wake(monkeypatch, tmp_path):
     env = _team_env(tmp_path)
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
