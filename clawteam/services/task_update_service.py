@@ -861,26 +861,8 @@ def _infer_execution_shape(feature_scope: dict[str, Any]) -> str:
     explicit_shape = str(feature_scope.get("execution_shape") or "").strip().lower()
     if explicit_shape in {"ui-only", "backend-only", "full-stack"}:
         return explicit_shape
-
-    evidence = "\n".join(
-        [
-            str(feature_scope.get("scoped_brief") or ""),
-            "\n".join(str(item) for item in (feature_scope.get("in_scope") or [])),
-            str(feature_scope.get("recommended_next_step") or ""),
-        ]
-    ).lower()
-    backend_markers = ("backend", "api", "server", "schema", "database", "migration", "endpoint")
-    ui_markers = ("ui", "frontend", "front-end", "page", "screen", "component", "ux", "client")
-    has_backend = any(marker in evidence for marker in backend_markers)
-    has_ui = any(marker in evidence for marker in ui_markers)
-    if has_backend and has_ui:
-        return "full-stack"
-    if has_backend:
-        return "backend-only"
-    if has_ui:
-        return "ui-only"
     raise TaskUpdateValidationError(
-        "post-scope materialization requires FEATURE_SCOPE to map cleanly to ui-only, backend-only, or full-stack"
+        "post-scope materialization requires FEATURE_SCOPE.execution_shape to be explicitly set to ui-only, backend-only, or full-stack"
     )
 
 

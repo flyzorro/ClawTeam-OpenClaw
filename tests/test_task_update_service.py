@@ -2763,7 +2763,7 @@ Deliver only the member list UI update.
     assert "Run scoped QA pass A on the real change" not in subjects
 
 
-def test_execute_task_update_post_scope_mode_fails_closed_when_feature_scope_shape_does_not_map_cleanly(monkeypatch, tmp_path):
+def test_execute_task_update_post_scope_mode_fails_closed_when_feature_scope_shape_is_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
     store = TaskStore("demo")
     scope, ctx = _post_scope_context(store)
@@ -2772,7 +2772,7 @@ def test_execute_task_update_post_scope_mode_fails_closed_when_feature_scope_sha
         lambda team, target_ids, caller, message_builder, repo, store, runtime, release_notifier: [],
     )
 
-    with pytest.raises(TaskUpdateValidationError, match="map cleanly"):
+    with pytest.raises(TaskUpdateValidationError, match=r"FEATURE_SCOPE\.execution_shape"):
         execute_task_update(
             task_id=scope.id,
             caller="leader",
@@ -2804,6 +2804,66 @@ Deliver only the minimal safe fix.
 
 ## FEATURE_SCOPE
 {"source_request":"Ship the feature safely","scoped_brief":"Deliver only the minimal safe fix.","in_scope":["minimal safe fix"],"unknowns":["none"],"leader_assumptions":["existing tests are representative"],"out_of_scope":["dashboard rewrite"],"risks_blockers":["none"],"recommended_next_step":"explicit post-scope materialization"}
+""",
+                add_blocks=None,
+                add_blocked_by=None,
+                add_on_fail=None,
+                failure_kind=None,
+                failure_note=None,
+                failure_root_cause=None,
+                failure_evidence=None,
+                failure_recommended_next_owner=None,
+                failure_recommended_action=None,
+                execution_id=None,
+                wake_owner=False,
+                message="",
+                force=False,
+            ),
+        )
+    assert {task.subject for task in store.list_tasks()} == {"Scope the task into a minimal deliverable"}
+
+
+def test_execute_task_update_post_scope_mode_fails_closed_when_feature_scope_shape_is_invalid(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+    store = TaskStore("demo")
+    scope, ctx = _post_scope_context(store)
+    monkeypatch.setattr(
+        "clawteam.services.task_update_service.wake_tasks_to_pending",
+        lambda team, target_ids, caller, message_builder, repo, store, runtime, release_notifier: [],
+    )
+
+    with pytest.raises(TaskUpdateValidationError, match=r"FEATURE_SCOPE\.execution_shape"):
+        execute_task_update(
+            task_id=scope.id,
+            caller="leader",
+            ctx=ctx,
+            request=TaskUpdateRequest(
+                status=TaskStatus.completed,
+                owner=None,
+                subject=None,
+                description="""## Source Request
+Ship the feature safely
+
+## Scoped Brief
+Deliver only the backend API update.
+
+## Unknowns
+- none
+
+## Leader Assumptions
+- existing tests are representative
+
+## Out of Scope
+- dashboard rewrite
+
+## Risks/Blockers
+- none
+
+## Recommended Next Step
+- explicit post-scope materialization
+
+## FEATURE_SCOPE
+{"source_request":"Ship the feature safely","scoped_brief":"Deliver only the backend API update.","in_scope":["backend API update"],"unknowns":["none"],"leader_assumptions":["existing tests are representative"],"out_of_scope":["dashboard rewrite"],"risks_blockers":["none"],"recommended_next_step":"explicit post-scope materialization","execution_shape":"frontend-only"}
 """,
                 add_blocks=None,
                 add_blocked_by=None,
