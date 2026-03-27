@@ -658,8 +658,8 @@ def build_launch_task_input(
         metadata["on_fail"] = [created_task_ids[name] for name in task_def.on_fail]
     if task_def.stage:
         metadata["template_stage"] = task_def.stage.strip().lower()
-        if metadata["template_stage"] == "scope":
-            metadata["feature_scope_required"] = True
+    if task_def.feature_scope_required:
+        metadata["feature_scope_required"] = True
     if task_def.message_type:
         metadata["message_type"] = task_def.message_type
     if task_def.required_sections:

@@ -37,6 +37,7 @@ class TaskDef(BaseModel):
     on_fail: list[str] = []
     message_type: str = ""
     required_sections: list[str] = []
+    feature_scope_required: bool = False
 
 
 class TemplateDef(BaseModel):

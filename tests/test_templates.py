@@ -496,7 +496,24 @@ Polish the member list UI using the existing tests are representative assumption
         assert "## Source Request" in task_input.description
         assert "## Brief Format\nprose_fallback" in task_input.description
 
-    def test_build_launch_task_input_marks_scope_tasks_as_feature_scope_required(self):
+    def test_build_launch_task_input_marks_explicitly_flagged_scope_tasks_as_feature_scope_required(self):
+        task_input = build_launch_task_input(
+            TaskDef(
+                subject="Scope",
+                description="Clarify {goal} into a minimal deliverable.",
+                owner="leader",
+                stage="scope",
+                feature_scope_required=True,
+            ),
+            goal="Ship the feature safely",
+            team_name="delivery-demo",
+            created_task_ids={},
+        )
+
+        assert task_input.metadata["template_stage"] == "scope"
+        assert task_input.metadata["feature_scope_required"] is True
+
+    def test_build_launch_task_input_does_not_auto_require_feature_scope_for_generic_scope_stage(self):
         task_input = build_launch_task_input(
             TaskDef(
                 subject="Scope",
@@ -510,7 +527,7 @@ Polish the member list UI using the existing tests are representative assumption
         )
 
         assert task_input.metadata["template_stage"] == "scope"
-        assert task_input.metadata["feature_scope_required"] is True
+        assert "feature_scope_required" not in task_input.metadata
 
     def test_build_launch_task_input_rejects_unknown_blocked_by_reference(self):
         with pytest.raises(LaunchReferenceError, match="blocked_by tasks: MissingScope") as exc:
@@ -850,6 +867,7 @@ class TestLoadBuiltinTemplate:
 
         by_subject = {task.subject: task for task in tmpl.tasks}
         assert by_subject["Scope the task into a minimal deliverable"].stage == "scope"
+        assert by_subject["Scope the task into a minimal deliverable"].feature_scope_required is True
         assert by_subject["Prepare repo, branch, env, and runnable baseline"].stage == "setup"
         assert by_subject["Review code quality, maintainability, and delivery readiness"].stage == "review"
         assert by_subject["Implement backend/data changes with real validation"].blocked_by == [
