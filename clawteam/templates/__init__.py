@@ -141,6 +141,7 @@ def execute_template_launch(
     goal: str,
     team_name: str,
     materialization_mode: str = "immediate",
+    template_name: str | None = None,
 ) -> LaunchExecutionResult:
     return _execute_template_launch(
         task_store,
@@ -149,6 +150,7 @@ def execute_template_launch(
         team_name=team_name,
         render_task=render_task,
         materialization_mode=materialization_mode,
+        template_name=template_name,
     )
 
 
@@ -162,8 +164,9 @@ def resolve_template_topology(tmpl: TemplateDef) -> TemplateDef:
     Currently supported:
     - explicit: use blocked_by/on_fail exactly as authored
     - delivery-default: require staged tasks and auto-fill standard delivery edges
+    - post-scope-only: launch creates only scope/root tasks; no auto-downstream materialization
     """
-    if tmpl.topology_mode == "explicit":
+    if tmpl.topology_mode in ("explicit", "post-scope-only"):
         return tmpl
 
     if tmpl.topology_mode != "delivery-default":
