@@ -54,11 +54,11 @@ def test_launch_template_creates_blocked_by_chain(monkeypatch, tmp_path):
 
     scope = by_subject["Scope the task into a minimal deliverable"]
     setup = by_subject["Prepare repo, branch, env, and runnable baseline"]
-    backend = by_subject["Implement backend/data changes with real validation"]
-    frontend = by_subject["Implement frontend/UI changes with real validation"]
-    qa_main = by_subject["Run main-flow QA on the real change"]
-    qa_reg = by_subject["Run edge-case and regression QA on the real change"]
-    review = by_subject["Review code quality, maintainability, and delivery readiness"]
+    backend = by_subject["Implement assigned change slice A with real validation"]
+    frontend = by_subject["Implement assigned change slice B with real validation"]
+    qa_main = by_subject["Run scoped QA pass A on the real change"]
+    qa_reg = by_subject["Run scoped QA pass B on the real change"]
+    review = by_subject["Review code quality, maintainability, and release readiness"]
     deliver = by_subject["Prepare final delivery package and human decision summary"]
 
     assert scope.blocked_by == []

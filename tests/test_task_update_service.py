@@ -724,7 +724,7 @@ def test_execute_task_update_rejects_dev_completion_without_substantive_repo_cha
     repo, detached_head = _init_repo_with_baseline(tmp_path)
     store = TaskStore("demo")
     task = store.create(
-        "Implement backend/data changes with real validation",
+        "Implement assigned change slice A with real validation",
         owner="dev1",
         metadata={
             "template_stage": "implement",
@@ -771,7 +771,7 @@ def test_execute_task_update_accepts_dev_completion_with_real_repo_change(monkey
 
     store = TaskStore("demo")
     task = store.create(
-        "Implement backend/data changes with real validation",
+        "Implement assigned change slice A with real validation",
         owner="dev1",
         metadata={
             "template_stage": "implement",
