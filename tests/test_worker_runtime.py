@@ -357,6 +357,7 @@ def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_pa
     assert called["env"]["CLAWTEAM_TASK_EXECUTION_ID"] == result["executionId"]
     assert called["env"]["CLAWTEAM_TASK_EXECUTION_SEQ"] == "1"
     assert called["env"]["CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH"].endswith("clawteam-demo-qa1.completion.json")
+    assert called["env"]["OPENCLAW_RUNTIME_COMPLETION_SIGNAL_PATH"] == called["env"]["CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH"]
 
     updated = TaskStore("demo").get(task.id)
     assert updated is not None
