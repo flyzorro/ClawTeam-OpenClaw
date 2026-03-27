@@ -261,6 +261,9 @@ class TaskUpdateRequest:
     failure_recommended_action: str | None
     qa_result_status: str | None = None
     qa_risk_note: str | None = None
+    triage_resolution_owner: str | None = None
+    triage_resolution_action: str | None = None
+    triage_resolution_note: str | None = None
     failure_repair_packet: FailureRepairPacket | None = None
     execution_id: str | None = None
     wake_owner: bool = False
@@ -445,18 +448,16 @@ def _apply_triage_followup_resolution(
     if source_status == TaskStatus.blocked.value:
         if source.status != TaskStatus.blocked:
             return None
-        next_owner = str(source.metadata.get("blocked_recommended_next_owner") or "").strip()
-        next_action = str(source.metadata.get("blocked_recommended_action") or "").strip()
     elif source_status == TaskStatus.failed.value:
         if source.status != TaskStatus.failed:
             return None
         if str(source.metadata.get("failure_kind") or "").strip() != "complex":
             return None
-        next_owner = str(source.metadata.get("failure_recommended_next_owner") or "").strip()
-        next_action = str(source.metadata.get("failure_recommended_action") or "").strip()
     else:
         return None
 
+    next_owner = str(metadata.get("triage_resolution_owner") or "").strip()
+    next_action = str(metadata.get("triage_resolution_action") or "").strip()
     if not next_owner or not next_action:
         return None
 
@@ -781,6 +782,12 @@ def execute_task_update(
         metadata_to_apply["qa_result_status"] = request.qa_result_status
     if request.qa_risk_note is not None:
         metadata_to_apply["qa_risk_note"] = request.qa_risk_note
+    if request.triage_resolution_owner is not None:
+        metadata_to_apply["triage_resolution_owner"] = request.triage_resolution_owner
+    if request.triage_resolution_action is not None:
+        metadata_to_apply["triage_resolution_action"] = request.triage_resolution_action
+    if request.triage_resolution_note is not None:
+        metadata_to_apply["triage_resolution_note"] = request.triage_resolution_note
     if request.failure_repair_packet is not None:
         if request.status != TaskStatus.failed:
             raise TaskUpdateValidationError("failure repair-packet options require --status failed")

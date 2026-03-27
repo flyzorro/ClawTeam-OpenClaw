@@ -1107,6 +1107,9 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
             failure_evidence=None,
             failure_recommended_next_owner=None,
             failure_recommended_action=None,
+            triage_resolution_owner="dev1",
+            triage_resolution_action="fix and re-run qa",
+            triage_resolution_note="owner confirmed in triage",
             execution_id=None,
             wake_owner=False,
             message="",
@@ -1154,6 +1157,100 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
     )
 
     assert len(wake_calls) == 1
+
+
+def test_execute_task_update_triage_completion_requires_resolution(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    qa = store.create("Regression QA", owner="qa1")
+
+    class FakeRuntime:
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            return {"taskId": task.id, "owner": task.owner, "message": message, "respawned": False}
+
+    execute_task_update(
+        task_id=qa.id,
+        caller="qa1",
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=FakeRuntime(),
+            release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+            failure_notifier=lambda *args, **kwargs: None,
+        ),
+        request=TaskUpdateRequest(
+            status=TaskStatus.failed,
+            owner=None,
+            subject=None,
+            description=None,
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind="complex",
+            failure_note=None,
+            failure_root_cause="ownership unclear",
+            failure_evidence="cross-cutting regression",
+            failure_recommended_next_owner="dev1",
+            failure_recommended_action="fix and re-run qa",
+            execution_id=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
+
+    triage_id = store.get(qa.id).metadata.get("triage_followup_task_id")
+    triage = store.get(str(triage_id))
+    assert triage is not None
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update(
+        task_id=triage.id,
+        caller="leader",
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=FakeRuntime(),
+            release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+            failure_notifier=lambda *args, **kwargs: None,
+        ),
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description=None,
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            execution_id=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
+
+    updated_source = store.get(qa.id)
+    assert updated_source is not None
+    assert updated_source.status == TaskStatus.failed
+    assert len(wake_calls) == 0
 
 
 def test_build_dependency_completion_message_includes_structured_qa_context(monkeypatch, tmp_path):
