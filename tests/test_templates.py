@@ -746,36 +746,36 @@ class TestLoadBuiltinTemplate:
         by_subject = {task.subject: task for task in tmpl.tasks}
         assert by_subject["Scope the task into a minimal deliverable"].stage == "scope"
         assert by_subject["Prepare repo, branch, env, and runnable baseline"].stage == "setup"
-        assert by_subject["Review code quality, maintainability, and delivery readiness"].stage == "review"
-        assert by_subject["Implement backend/data changes with real validation"].blocked_by == [
+        assert by_subject["Review code quality, maintainability, and release readiness"].stage == "review"
+        assert by_subject["Implement assigned change slice A with real validation"].blocked_by == [
             "Prepare repo, branch, env, and runnable baseline"
         ]
-        assert by_subject["Implement frontend/UI changes with real validation"].blocked_by == [
+        assert by_subject["Implement assigned change slice B with real validation"].blocked_by == [
             "Prepare repo, branch, env, and runnable baseline"
         ]
-        assert by_subject["Run main-flow QA on the real change"].blocked_by == [
-            "Implement backend/data changes with real validation",
-            "Implement frontend/UI changes with real validation",
+        assert by_subject["Run scoped QA pass A on the real change"].blocked_by == [
+            "Implement assigned change slice A with real validation",
+            "Implement assigned change slice B with real validation",
         ]
-        assert by_subject["Run edge-case and regression QA on the real change"].blocked_by == [
-            "Implement backend/data changes with real validation",
-            "Implement frontend/UI changes with real validation",
+        assert by_subject["Run scoped QA pass B on the real change"].blocked_by == [
+            "Implement assigned change slice A with real validation",
+            "Implement assigned change slice B with real validation",
         ]
-        assert by_subject["Review code quality, maintainability, and delivery readiness"].blocked_by == [
-            "Run main-flow QA on the real change",
-            "Run edge-case and regression QA on the real change",
+        assert by_subject["Review code quality, maintainability, and release readiness"].blocked_by == [
+            "Run scoped QA pass A on the real change",
+            "Run scoped QA pass B on the real change",
         ]
-        assert by_subject["Run main-flow QA on the real change"].on_fail == [
-            "Implement backend/data changes with real validation",
-            "Implement frontend/UI changes with real validation",
+        assert by_subject["Run scoped QA pass A on the real change"].on_fail == [
+            "Implement assigned change slice A with real validation",
+            "Implement assigned change slice B with real validation",
         ]
-        assert by_subject["Run edge-case and regression QA on the real change"].on_fail == [
-            "Implement backend/data changes with real validation",
-            "Implement frontend/UI changes with real validation",
+        assert by_subject["Run scoped QA pass B on the real change"].on_fail == [
+            "Implement assigned change slice A with real validation",
+            "Implement assigned change slice B with real validation",
         ]
-        assert by_subject["Review code quality, maintainability, and delivery readiness"].on_fail == [
-            "Implement backend/data changes with real validation",
-            "Implement frontend/UI changes with real validation",
+        assert by_subject["Review code quality, maintainability, and release readiness"].on_fail == [
+            "Implement assigned change slice A with real validation",
+            "Implement assigned change slice B with real validation",
         ]
         assert by_subject["Prepare repo, branch, env, and runnable baseline"].message_type == "SETUP_RESULT"
         assert by_subject["Prepare repo, branch, env, and runnable baseline"].required_sections == [
@@ -792,12 +792,12 @@ class TestLoadBuiltinTemplate:
         assert "Remote gate" in by_subject["Prepare repo, branch, env, and runnable baseline"].description
         assert "不要依赖 Linux 专属 `timeout`" in by_subject["Prepare repo, branch, env, and runnable baseline"].description
         assert "SETUP_RESULT" in by_subject["Prepare repo, branch, env, and runnable baseline"].description
-        assert by_subject["Implement backend/data changes with real validation"].message_type == "DEV_RESULT"
-        assert by_subject["Implement frontend/UI changes with real validation"].message_type == "DEV_RESULT"
-        assert by_subject["Run main-flow QA on the real change"].message_type == "QA_RESULT"
-        assert by_subject["Run edge-case and regression QA on the real change"].message_type == "QA_RESULT"
-        assert by_subject["Review code quality, maintainability, and delivery readiness"].message_type == "REVIEW_RESULT"
-        assert by_subject["Review code quality, maintainability, and delivery readiness"].required_sections == [
+        assert by_subject["Implement assigned change slice A with real validation"].message_type == "DEV_RESULT"
+        assert by_subject["Implement assigned change slice B with real validation"].message_type == "DEV_RESULT"
+        assert by_subject["Run scoped QA pass A on the real change"].message_type == "QA_RESULT"
+        assert by_subject["Run scoped QA pass B on the real change"].message_type == "QA_RESULT"
+        assert by_subject["Review code quality, maintainability, and release readiness"].message_type == "REVIEW_RESULT"
+        assert by_subject["Review code quality, maintainability, and release readiness"].required_sections == [
             "decision",
             "summary",
             "architecture_review",

@@ -1,6 +1,6 @@
 [template]
 name = "five-step-delivery"
-description = "Reusable delivery workflow: Scope -> Setup -> parallel Backend/UI Implement -> parallel Main-flow/Regression QA -> Review -> Deliver"
+description = "Reusable delivery workflow: Scope -> Setup -> parallel implementation passes -> parallel verification passes -> Review -> Deliver"
 command = ["openclaw"]
 backend = "tmux"
 topology_mode = "delivery-default"
@@ -14,8 +14,8 @@ Your goal: {goal}
 Workflow to enforce:
 1. Scope
 2. Setup
-3. Parallel Implement (backend + frontend/UI)
-4. Parallel QA (main-flow + edge/regression)
+3. Parallel Implement (two scoped execution lanes)
+4. Parallel QA (two scoped verification lanes)
 5. Review
 6. Deliver
 
@@ -84,11 +84,11 @@ When done, send a summary to leader and update the task status.
 [[template.agents]]
 name = "dev1"
 type = "general-purpose"
-task = """You own the backend/data implementation lane.
+task = """You own one scoped implementation lane.
 The team goal is: {goal}
 
 Execution contract:
-- Implement backend, API, data, service, and state-handling changes.
+- Implement the assigned code, data, configuration, or integration changes required for the scoped brief.
 - Make the minimum necessary code change.
 - Validate with real commands whenever possible.
 - Do not claim success based on theory alone.
@@ -104,24 +104,24 @@ When reporting, include:
 
 Check your tasks: `clawteam task list {team_name} --owner {agent_name}`
 If blocked, notify leader:
-`clawteam inbox send {team_name} leader "DEV BACKEND BLOCKED: [exact blocker]"`
+`clawteam inbox send {team_name} leader "IMPLEMENTATION LANE BLOCKED: [exact blocker]"`
 When done, send a summary to leader and update the task status.
 """
 
 [[template.agents]]
 name = "dev2"
 type = "general-purpose"
-task = """You own the frontend/UI implementation lane.
+task = """You own a second scoped implementation lane.
 The team goal is: {goal}
 
 Execution contract:
-- Implement frontend, UI, page, state-display, and interaction changes.
+- Implement the assigned code, UX, state, integration, or presentation changes required for the scoped brief.
 - Make the minimum necessary code change.
 - Validate with real commands whenever possible.
 - Do not claim success based on theory alone.
 - Do not use mock/stub results to pretend the task is complete.
 - Keep the change scope tight and explain why each changed file matters.
-- Coordinate with backend contracts rather than inventing incompatible assumptions.
+- Coordinate with shared interfaces rather than inventing incompatible assumptions.
 
 When reporting, include:
 - files changed
@@ -132,14 +132,14 @@ When reporting, include:
 
 Check your tasks: `clawteam task list {team_name} --owner {agent_name}`
 If blocked, notify leader:
-`clawteam inbox send {team_name} leader "DEV FRONTEND BLOCKED: [exact blocker]"`
+`clawteam inbox send {team_name} leader "IMPLEMENTATION LANE BLOCKED: [exact blocker]"`
 When done, send a summary to leader and update the task status.
 """
 
 [[template.agents]]
 name = "qa1"
 type = "general-purpose"
-task = """You own the main-flow QA lane.
+task = """You own one scoped QA lane.
 The team goal is: {goal}
 
 Execution contract:
@@ -158,14 +158,14 @@ When reporting, include:
 
 Check your tasks: `clawteam task list {team_name} --owner {agent_name}`
 If blocked, notify leader:
-`clawteam inbox send {team_name} leader "QA MAIN-FLOW BLOCKED: [exact blocker]"`
+`clawteam inbox send {team_name} leader "QA LANE BLOCKED: [exact blocker]"`
 When done, send a summary to leader and update the task status.
 """
 
 [[template.agents]]
 name = "qa2"
 type = "general-purpose"
-task = """You own the edge/regression QA lane.
+task = """You own a second scoped QA lane.
 The team goal is: {goal}
 
 Execution contract:
@@ -184,7 +184,7 @@ When reporting, include:
 
 Check your tasks: `clawteam task list {team_name} --owner {agent_name}`
 If blocked, notify leader:
-`clawteam inbox send {team_name} leader "QA REGRESSION BLOCKED: [exact blocker]"`
+`clawteam inbox send {team_name} leader "QA LANE BLOCKED: [exact blocker]"`
 When done, send a summary to leader and update the task status.
 """
 
@@ -313,20 +313,20 @@ next_action: <handoff or fail-closed blocker>
 """
 
 [[template.tasks]]
-subject = "Implement backend/data changes with real validation"
+subject = "Implement assigned change slice A with real validation"
 owner = "dev1"
 stage = "implement"
 message_type = "DEV_RESULT"
 required_sections = ["status", "summary", "changed_files", "validation", "known_issues", "next_action"]
 blocked_by = ["Prepare repo, branch, env, and runnable baseline"]
 description = """Goal:
-只完成本次最小必要的后端/数据/API 修改，并做真实本地验证。
+只完成本次最小必要的已分配改动切片 A，并做真实本地验证。
 
 Context:
 - Goal: {goal}
 
 Done when:
-1. 后端或数据改动已完成
+1. 已分配改动切片 A 已完成
 2. 改动范围清晰可解释
 3. 至少相关构建/测试/运行验证真实通过
 4. 未通过项已明确说明原因
@@ -352,21 +352,21 @@ next_action: <handoff to QA>
 """
 
 [[template.tasks]]
-subject = "Implement frontend/UI changes with real validation"
+subject = "Implement assigned change slice B with real validation"
 owner = "dev2"
 stage = "implement"
 message_type = "DEV_RESULT"
 required_sections = ["status", "summary", "changed_files", "validation", "known_issues", "next_action"]
 blocked_by = ["Prepare repo, branch, env, and runnable baseline"]
 description = """Goal:
-只完成本次最小必要的前端/UI/交互修改，并做真实本地验证。
+只完成本次最小必要的已分配改动切片 B，并做真实本地验证。
 
 Context:
 - Goal: {goal}
 
 Done when:
-1. 前端或交互改动已完成
-2. 与后端契约保持一致
+1. 已分配改动切片 B 已完成
+2. 与共享契约保持一致
 3. 至少相关构建/测试/运行验证真实通过
 4. 未通过项已明确说明原因
 5. 输出给 QA 的验证上下文
@@ -391,13 +391,13 @@ next_action: <handoff to QA>
 """
 
 [[template.tasks]]
-subject = "Run main-flow QA on the real change"
+subject = "Run scoped QA pass A on the real change"
 owner = "qa1"
 stage = "qa"
 message_type = "QA_RESULT"
 required_sections = ["status", "summary", "evidence", "validation", "risk", "next_action"]
-blocked_by = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
-on_fail = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
+blocked_by = ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"]
+on_fail = ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"]
 description = """Goal:
 基于实现结果做真实主流程验证，只接受真实通过或真实失败。
 
@@ -437,13 +437,13 @@ If status=fail, also pass these task-update fields when known:
 """
 
 [[template.tasks]]
-subject = "Run edge-case and regression QA on the real change"
+subject = "Run scoped QA pass B on the real change"
 owner = "qa2"
 stage = "qa"
 message_type = "QA_RESULT"
 required_sections = ["status", "summary", "evidence", "validation", "risk", "next_action"]
-blocked_by = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
-on_fail = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
+blocked_by = ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"]
+on_fail = ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"]
 description = """Goal:
 基于实现结果做真实边界、回归、降级路径验证，只接受真实通过或真实失败。
 
@@ -483,13 +483,13 @@ If status=fail, also pass these task-update fields when known:
 """
 
 [[template.tasks]]
-subject = "Review code quality, maintainability, and delivery readiness"
+subject = "Review code quality, maintainability, and release readiness"
 owner = "review1"
 stage = "review"
 message_type = "REVIEW_RESULT"
 required_sections = ["decision", "summary", "architecture_review", "required_fixes", "evidence", "validation", "next_action"]
-blocked_by = ["Run main-flow QA on the real change", "Run edge-case and regression QA on the real change"]
-on_fail = ["Implement backend/data changes with real validation", "Implement frontend/UI changes with real validation"]
+blocked_by = ["Run scoped QA pass A on the real change", "Run scoped QA pass B on the real change"]
+on_fail = ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"]
 description = """Goal:
 在 QA 之后，对真实代码改动做独立 code review，检查质量、可维护性、设计一致性和交付风险。
 
@@ -501,7 +501,7 @@ Done when:
 2. 已判断改动是否与目标一致
 3. 已完成架构审查：说明改动属于哪一层（workflow / task / execution / runtime），并检查状态边界、并发一致性、失败恢复与兼容性风险
 4. 已给出必须修复项和可选建议
-5. 已明确结论：可交付 / 需回退 Implement
+5. 已明确结论：可继续交付 / 需回退 Implement
 6. 已给出进入 Deliver 的依据或阻塞原因
 
 Do not:
@@ -529,7 +529,7 @@ next_action: <move to deliver | return to implement>
 subject = "Prepare final delivery package and human decision summary"
 owner = "leader"
 stage = "deliver"
-blocked_by = ["Review code quality, maintainability, and delivery readiness"]
+blocked_by = ["Review code quality, maintainability, and release readiness"]
 description = """Goal:
 整理最终交付结果，让人可以直接决定是否接受、继续修改或发起 PR/合并流程。
 
