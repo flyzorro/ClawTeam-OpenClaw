@@ -14,12 +14,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 from clawteam.delivery.failure_notifier import notify_task_failure
+from clawteam.delivery.release_notifier import notify_task_release
+from clawteam.runtime.orchestrator import RuntimeOrchestrator
+from clawteam.services.task_update_service import TaskUpdateContext, TaskUpdateRequest, execute_task_update
 from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.spawn.registry import unregister_agent
 from clawteam.task.terminal_commands import build_terminal_task_update_command
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
+    TaskTransitionValidationError,
 )
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
@@ -526,7 +530,7 @@ def _normalize_result_text(value: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", value.strip())
 
 
-def _extract_structured_result_sections(transcript_tail: str, block_name: str) -> dict[str, str] | None:
+def _extract_result_block_text(transcript_tail: str, block_name: str) -> str | None:
     normalized = "\n".join(
         part for part in (_extract_text_from_transcript_line(line) for line in transcript_tail.splitlines()) if part
     )
@@ -534,7 +538,19 @@ def _extract_structured_result_sections(transcript_tail: str, block_name: str) -
     heading_match = heading_pattern.search(normalized)
     if not heading_match:
         return None
-    body = normalized[heading_match.end():]
+    return normalized[heading_match.start():].strip() or None
+
+
+
+def _extract_structured_result_sections(transcript_tail: str, block_name: str) -> dict[str, str] | None:
+    block_text = _extract_result_block_text(transcript_tail, block_name)
+    if not block_text:
+        return None
+    heading_pattern = re.compile(rf"{re.escape(block_name)}\s+", re.IGNORECASE)
+    heading_match = heading_pattern.search(block_text)
+    if not heading_match:
+        return None
+    body = block_text[heading_match.end():]
     section_pattern = re.compile(
         r"(?im)^(status|summary|changed_files|evidence|validation|known_issues|risk|next_action|decision|architecture_review|required_fixes):\s*"
     )
@@ -835,6 +851,76 @@ def _build_failure_terminal_intent(
         session_key=session_key,
         fallback_case_name="worker_runtime_failed_closed",
     )
+
+
+def _recover_terminal_via_task_update(
+    *,
+    team_name: str,
+    agent_name: str,
+    task_id: str,
+    execution_id: str | None,
+    inferred_status: TaskStatus,
+    description: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        result = execute_task_update(
+            task_id=task_id,
+            caller=agent_name,
+            request=TaskUpdateRequest(
+                status=inferred_status,
+                owner=None,
+                subject=None,
+                description=description,
+                add_blocks=None,
+                add_blocked_by=None,
+                add_on_fail=None,
+                failure_kind=None,
+                failure_note=None,
+                failure_root_cause=None,
+                failure_evidence=None,
+                failure_recommended_next_owner=None,
+                failure_recommended_action=None,
+                execution_id=execution_id,
+                force=False,
+            ),
+            ctx=TaskUpdateContext(
+                store=TaskStore(team_name),
+                team=team_name,
+                runtime=RuntimeOrchestrator(team=team_name),
+                release_notifier=notify_task_release,
+                failure_notifier=notify_task_failure,
+            ),
+        )
+    except TaskTransitionValidationError as exc:
+        return {
+            "status": "terminal_rejected",
+            "taskId": task_id,
+            "reason": "runtime terminal recovery failed completion contract validation",
+            "evidence": description,
+            "rejectionReason": str(exc),
+            "terminalStatus": inferred_status.value,
+        }
+    task = result.task
+    if task is None:
+        return {
+            "status": "terminal_rejected",
+            "taskId": task_id,
+            "reason": "runtime terminal recovery did not persist task update",
+            "evidence": description,
+            "rejectionReason": "task_update_missing_result",
+            "terminalStatus": inferred_status.value,
+        }
+    if metadata:
+        TaskStore(team_name).update(task_id, metadata=metadata, caller=agent_name)
+        task = TaskStore(team_name).get(task_id) or task
+    return {
+        "status": "terminal_applied",
+        "taskId": task_id,
+        "terminalStatus": task.status.value,
+        "taskStatus": task.status.value,
+    }
+
 
 
 def apply_terminal_intent(
@@ -1167,49 +1253,20 @@ def run_worker_iteration(
                         recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
                         recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
                         recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
-                if (
-                    result_type == "QA_RESULT"
-                    and inferred_status == TaskStatus.completed
-                    and (
-                        not structured_sections
-                        or not _has_meaningful_bullets(structured_sections.get("evidence", ""))
-                        or not _has_meaningful_bullets(structured_sections.get("validation", ""))
-                    )
-                ):
-                    recovered = {
-                        "status": "terminal_rejected",
-                        "taskId": claimed.id,
-                        "reason": "runtime terminal recovered from invalid QA_RESULT evidence",
-                        "evidence": transcript_tail,
-                        "rejectionReason": "qa_result_missing_evidence_or_validation",
-                        "terminalStatus": claimed.status.value,
-                        "intentSource": (
-                            "completion_envelope"
-                            if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
-                            else "transcript_result_block_temporary_compatibility"
-                        ),
-                    }
-                else:
-                    recovered = apply_terminal_intent(
+                recovery_description = _extract_result_block_text(transcript_tail, result_type) or transcript_tail
+                recovered = _recover_terminal_via_task_update(
                     team_name=team_name,
                     agent_name=agent_name,
-                    intent=TerminalIntent(
-                        task_id=claimed.id,
-                        execution_id=claimed.active_execution_id,
-                        terminal_status=inferred_status,
-                        reason=f"runtime terminal recovered from {recovery_source}",
-                        evidence=transcript_tail,
-                        source=(
-                            "completion_envelope"
-                            if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
-                            else "transcript_result_block_temporary_compatibility"
-                        ),
-                        metadata=recovery_metadata,
-                        session_key=session_key,
-                        result_type=result_type,
-                        authoritative=recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE,
-                        fallback_case_name="worker_runtime_transcript_terminal_recovery",
-                    ),
+                    task_id=claimed.id,
+                    execution_id=claimed.active_execution_id,
+                    inferred_status=inferred_status,
+                    description=recovery_description,
+                    metadata=recovery_metadata,
+                )
+                recovered["intentSource"] = (
+                    "completion_envelope"
+                    if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
+                    else "transcript_result_block_temporary_compatibility"
                 )
                 if recovered["status"] in {"terminal_applied", "already_terminal"}:
                     return {
@@ -1238,6 +1295,9 @@ def run_worker_iteration(
                 f"post_exit_settle_timeout_seconds={settle_timeout_seconds}",
                 f"post_exit_progress_grace_seconds={settle_progress_grace_seconds}",
             ]
+            if inferred_terminal is not None and recovered.get("status") == "terminal_rejected":
+                evidence_parts.append(f"recovery_rejection_reason: {recovered.get('rejectionReason', '')}")
+                evidence_parts.append(f"recovery_rejection_evidence:\n{recovered.get('evidence', '')}")
             if result.stderr:
                 evidence_parts.append(f"stderr: {result.stderr.strip()}")
             if result.stdout:

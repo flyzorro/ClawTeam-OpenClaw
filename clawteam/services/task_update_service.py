@@ -397,6 +397,50 @@ def _validate_qa_completion(existing: TaskItem, request: TaskUpdateRequest) -> N
         raise TaskTransitionValidationError("QA_RESULT completion requires non-placeholder validation bullets")
 
 
+def _validate_review_completion(existing: TaskItem, request: TaskUpdateRequest, *, store: TaskStore) -> None:
+    if request.status != TaskStatus.completed:
+        return
+    metadata = existing.metadata or {}
+    if metadata.get("message_type") != "REVIEW_RESULT":
+        return
+
+    _, sections, _ = _parse_required_structured_result(
+        existing=existing,
+        request=request,
+        message_type="REVIEW_RESULT",
+    )
+    decision = str(sections.get("decision") or "").strip().lower()
+    if decision != "approve":
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires decision approve")
+    if not _has_meaningful_bullets(sections.get("evidence", "")):
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires non-placeholder evidence bullets")
+    if not _has_meaningful_bullets(sections.get("validation", "")):
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires non-placeholder validation bullets")
+
+    qa_dependency_ids = list(existing.blocked_by)
+    metadata_qa_dependency_ids = metadata.get("qa_dependency_ids")
+    if isinstance(metadata_qa_dependency_ids, list):
+        for dep_id in metadata_qa_dependency_ids:
+            dep_id = str(dep_id).strip()
+            if dep_id and dep_id not in qa_dependency_ids:
+                qa_dependency_ids.append(dep_id)
+    qa_dependencies = [store.get(dep_id) for dep_id in qa_dependency_ids]
+    qa_dependencies = [task for task in qa_dependencies if task is not None and (task.metadata or {}).get("message_type") == "QA_RESULT"]
+    if not qa_dependencies:
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires explicit QA_RESULT dependencies")
+
+
+def validate_terminal_completion_request(*, existing: TaskItem, request: TaskUpdateRequest, store: TaskStore) -> None:
+    validators: tuple[Callable[..., None], ...] = (
+        _validate_setup_completion,
+        _validate_dev_completion,
+        _validate_qa_completion,
+    )
+    for validator in validators:
+        validator(existing, request)
+    _validate_review_completion(existing, request, store=store)
+
+
 def plan_task_update(
     *,
     existing: TaskItem,
@@ -1139,9 +1183,7 @@ def execute_task_update(
             failed_targets_to_wake=plan.failed_targets_to_wake,
         )
 
-    _validate_setup_completion(existing, request)
-    _validate_dev_completion(existing, request)
-    _validate_qa_completion(existing, request)
+    validate_terminal_completion_request(existing=existing, request=request, store=ctx.store)
 
     generic_patch = _build_generic_task_patch(
         request=request,

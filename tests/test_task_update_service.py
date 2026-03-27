@@ -808,6 +808,98 @@ next_action: handoff to qa
     assert result.task.description.startswith("DEV_RESULT")
 
 
+def test_execute_task_update_rejects_review_completion_without_explicit_qa_dependencies(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "review1", "review1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create(
+        "Review code quality, maintainability, and delivery readiness",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "required_sections": ["decision", "summary", "architecture_review", "required_fixes", "evidence", "validation", "next_action"],
+        },
+    )
+    claimed = store.update(task.id, status=TaskStatus.in_progress, caller="review1")
+
+    review = """REVIEW_RESULT
+decision: approve
+summary: code quality looks good
+architecture_review:
+- change stays within current boundaries
+required_fixes:
+- none
+evidence:
+- reviewed git diff and touched modules
+validation:
+- python -m pytest tests/test_task_update_service.py -q -> passed
+next_action: handoff to delivery
+"""
+
+    with pytest.raises(TaskUpdateValidationError, match="explicit QA_RESULT dependencies"):
+        execute_task_update(
+            task_id=task.id,
+            caller="review1",
+            ctx=TaskUpdateContext(store=store, team="demo", runtime=RuntimeOrchestrator(team="demo"), release_notifier=lambda *a, **k: None, failure_notifier=lambda *a, **k: None),
+            request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=review, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
+        )
+
+
+def test_execute_task_update_accepts_review_completion_with_explicit_qa_dependencies(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "review1", "review1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    qa = store.create(
+        "Run main-flow QA on the real change",
+        owner="qa1",
+        metadata={"template_stage": "qa", "message_type": "QA_RESULT"},
+    )
+    store.update(qa.id, status=TaskStatus.completed, caller="qa1")
+    task = store.create(
+        "Review code quality, maintainability, and delivery readiness",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "qa_dependency_ids": [qa.id],
+            "required_sections": ["decision", "summary", "architecture_review", "required_fixes", "evidence", "validation", "next_action"],
+        },
+    )
+    claimed = store.update(task.id, status=TaskStatus.in_progress, caller="review1")
+
+    review = """REVIEW_RESULT
+decision: approve
+summary: code quality looks good
+architecture_review:
+- change stays within current boundaries
+required_fixes:
+- none
+evidence:
+- reviewed git diff and touched modules
+validation:
+- python -m pytest tests/test_task_update_service.py -q -> passed
+next_action: handoff to delivery
+"""
+
+    result = execute_task_update(
+        task_id=task.id,
+        caller="review1",
+        ctx=TaskUpdateContext(store=store, team="demo", runtime=RuntimeOrchestrator(team="demo"), release_notifier=lambda *a, **k: None, failure_notifier=lambda *a, **k: None),
+        request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=review, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
+    )
+
+    assert result.task.status == TaskStatus.completed
+    assert result.task.description.startswith("REVIEW_RESULT")
+
+
 def test_probe_remote_head_classifies_timeout_as_cached_only(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=kwargs.get("args", args[0] if args else ["git"]), timeout=30)
