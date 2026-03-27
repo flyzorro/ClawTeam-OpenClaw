@@ -376,6 +376,27 @@ def _validate_dev_completion(existing: TaskItem, request: TaskUpdateRequest) -> 
         )
 
 
+def _validate_qa_completion(existing: TaskItem, request: TaskUpdateRequest) -> None:
+    if request.status != TaskStatus.completed:
+        return
+    metadata = existing.metadata or {}
+    if metadata.get("message_type") != "QA_RESULT":
+        return
+
+    _, sections, _ = _parse_required_structured_result(
+        existing=existing,
+        request=request,
+        message_type="QA_RESULT",
+    )
+    status = str(sections.get("status") or "").strip().lower()
+    if status not in {"pass", "pass_with_risk"}:
+        raise TaskTransitionValidationError("QA_RESULT completion requires status pass or pass_with_risk")
+    if not _has_meaningful_bullets(sections.get("evidence", "")):
+        raise TaskTransitionValidationError("QA_RESULT completion requires non-placeholder evidence bullets")
+    if not _has_meaningful_bullets(sections.get("validation", "")):
+        raise TaskTransitionValidationError("QA_RESULT completion requires non-placeholder validation bullets")
+
+
 def plan_task_update(
     *,
     existing: TaskItem,
@@ -1120,6 +1141,7 @@ def execute_task_update(
 
     _validate_setup_completion(existing, request)
     _validate_dev_completion(existing, request)
+    _validate_qa_completion(existing, request)
 
     generic_patch = _build_generic_task_patch(
         request=request,

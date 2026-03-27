@@ -38,6 +38,39 @@ DEFAULT_POST_EXIT_PROGRESS_GRACE = 3.0
 COMPLETION_ENVELOPE_VERSION = 1
 COMPLETION_SIGNAL_PRIMARY_SOURCE = "runtime_completion_envelope"
 COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE = "transcript_result_block_temporary_compatibility"
+
+
+def _has_meaningful_bullets(value: str) -> bool:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    if not lines:
+        return False
+    blacklist = {
+        "- none",
+        "- n/a",
+        "- na",
+        "- no changes",
+        "- no change",
+        "- unchanged",
+        "- no-op",
+        "- noop",
+        "none",
+        "n/a",
+        "na",
+        "no changes",
+        "no change",
+        "unchanged",
+        "no-op",
+        "noop",
+    }
+    for entry in lines:
+        normalized = entry.lower()
+        if normalized in blacklist or normalized.startswith("- none") or normalized.startswith("none"):
+            continue
+        if normalized.startswith("-") and len(normalized.lstrip("- ")) > 0:
+            return True
+        if normalized:
+            return True
+    return False
 _COMPLETION_ENVELOPE_ALLOWED_TERMINAL_STATUS = frozenset({"completed", "failed"})
 
 
@@ -1134,7 +1167,30 @@ def run_worker_iteration(
                         recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
                         recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
                         recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
-                recovered = apply_terminal_intent(
+                if (
+                    result_type == "QA_RESULT"
+                    and inferred_status == TaskStatus.completed
+                    and (
+                        not structured_sections
+                        or not _has_meaningful_bullets(structured_sections.get("evidence", ""))
+                        or not _has_meaningful_bullets(structured_sections.get("validation", ""))
+                    )
+                ):
+                    recovered = {
+                        "status": "terminal_rejected",
+                        "taskId": claimed.id,
+                        "reason": "runtime terminal recovered from invalid QA_RESULT evidence",
+                        "evidence": transcript_tail,
+                        "rejectionReason": "qa_result_missing_evidence_or_validation",
+                        "terminalStatus": claimed.status.value,
+                        "intentSource": (
+                            "completion_envelope"
+                            if recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE
+                            else "transcript_result_block_temporary_compatibility"
+                        ),
+                    }
+                else:
+                    recovered = apply_terminal_intent(
                     team_name=team_name,
                     agent_name=agent_name,
                     intent=TerminalIntent(
