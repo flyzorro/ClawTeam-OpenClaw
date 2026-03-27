@@ -279,6 +279,7 @@ class TmuxBackend(SpawnBackend):
             data_dir=env_vars.get("CLAWTEAM_DATA_DIR", ""),
             worker_instance_id=worker_instance_id,
             clawteam_bin=env_vars.get("CLAWTEAM_BIN", ""),
+            cwd=cwd or "",
         )
 
         return f"Agent '{agent_name}' spawned in tmux ({target})"
