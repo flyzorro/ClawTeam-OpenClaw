@@ -37,6 +37,7 @@ class TaskDef(BaseModel):
     on_fail: list[str] = []
     message_type: str = ""
     required_sections: list[str] = []
+    feature_scope_required: bool = False
 
 
 class TemplateDef(BaseModel):
@@ -51,6 +52,7 @@ class TemplateDef(BaseModel):
 
 
 from .launch import (
+    FeatureScope,
     LaunchBriefSections,
     LaunchExecutionResult,
     LaunchReferenceError,
@@ -67,7 +69,9 @@ from .launch import (
     find_scope_tightening,
     inject_resolved_scope_context,
     normalize_launch_brief,
+    parse_feature_scope_block,
     parse_launch_brief,
+    read_feature_scope_metadata,
     read_launch_brief_metadata,
     read_task_launch_brief,
     render_resolved_scope_context,

@@ -217,6 +217,7 @@ When done, send a summary to leader and update the task status.
 subject = "Scope the task into a minimal deliverable"
 owner = "leader"
 stage = "scope"
+feature_scope_required = true
 description = """Goal:
 把需求收敛成一个最小可交付目标，只保留这次必须完成的范围。
 
