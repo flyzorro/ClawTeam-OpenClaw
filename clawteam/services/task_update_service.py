@@ -397,6 +397,60 @@ def _validate_qa_completion(existing: TaskItem, request: TaskUpdateRequest) -> N
         raise TaskTransitionValidationError("QA_RESULT completion requires non-placeholder validation bullets")
 
 
+def _validate_review_completion(existing: TaskItem, request: TaskUpdateRequest, *, all_tasks: list[TaskItem]) -> None:
+    if request.status != TaskStatus.completed:
+        return
+    metadata = existing.metadata or {}
+    if metadata.get("message_type") != "REVIEW_RESULT":
+        return
+
+    _, sections, _ = _parse_required_structured_result(
+        existing=existing,
+        request=request,
+        message_type="REVIEW_RESULT",
+    )
+    decision = str(sections.get("decision") or "").strip().lower()
+    if decision != "approve":
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires decision approve")
+    if not _has_meaningful_bullets(sections.get("evidence", "")):
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires non-placeholder evidence bullets")
+    if not _has_meaningful_bullets(sections.get("validation", "")):
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires non-placeholder validation bullets")
+
+    task_by_id = {task.id: task for task in all_tasks}
+    qa_dependencies = [task_by_id[task_id] for task_id in existing.blocked_by if task_id in task_by_id]
+    if not qa_dependencies:
+        qa_dependencies = [
+            task for task in all_tasks
+            if existing.id in getattr(task, "blocks", []) and str((task.metadata or {}).get("template_stage") or "").strip().lower() == "qa"
+        ]
+    if not qa_dependencies:
+        raise TaskTransitionValidationError("REVIEW_RESULT completion requires completed QA dependencies with persisted QA_RESULT metadata")
+    for dependency in qa_dependencies:
+        dep_metadata = dependency.metadata if isinstance(dependency.metadata, dict) else {}
+        qa_result = dep_metadata.get("qa_result") if isinstance(dep_metadata.get("qa_result"), dict) else {}
+        qa_status = str(qa_result.get("status") or dep_metadata.get("qa_result_status") or "").strip().lower()
+        if dependency.status != TaskStatus.completed or qa_status not in {"pass", "pass_with_risk"}:
+            raise TaskTransitionValidationError("REVIEW_RESULT completion requires completed QA dependencies with persisted QA_RESULT metadata")
+
+
+def validate_completion(existing: TaskItem, request: TaskUpdateRequest, *, all_tasks: list[TaskItem]) -> None:
+    metadata = existing.metadata or {}
+    message_type = str(metadata.get("message_type") or "").strip().upper()
+    if message_type == "SETUP_RESULT":
+        _validate_setup_completion(existing, request)
+        return
+    if message_type == "DEV_RESULT":
+        _validate_dev_completion(existing, request)
+        return
+    if message_type == "QA_RESULT":
+        _validate_qa_completion(existing, request)
+        return
+    if message_type == "REVIEW_RESULT":
+        _validate_review_completion(existing, request, all_tasks=all_tasks)
+        return
+
+
 def plan_task_update(
     *,
     existing: TaskItem,
@@ -1139,9 +1193,7 @@ def execute_task_update(
             failed_targets_to_wake=plan.failed_targets_to_wake,
         )
 
-    _validate_setup_completion(existing, request)
-    _validate_dev_completion(existing, request)
-    _validate_qa_completion(existing, request)
+    validate_completion(existing, request, all_tasks=ctx.store.list_tasks())
 
     generic_patch = _build_generic_task_patch(
         request=request,
