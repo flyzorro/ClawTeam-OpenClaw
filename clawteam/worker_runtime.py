@@ -1016,6 +1016,7 @@ def run_worker_iteration(
     env["CLAWTEAM_TASK_EXECUTION_ID"] = claimed.active_execution_id
     env["CLAWTEAM_TASK_EXECUTION_SEQ"] = str(claimed.execution_seq)
     env["CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH"] = runtime_completion_signal_path
+    env["OPENCLAW_RUNTIME_COMPLETION_SIGNAL_PATH"] = runtime_completion_signal_path
     progress_stall_timeout_seconds = float(
         env.get("CLAWTEAM_WORKER_PROGRESS_STALL_TIMEOUT", DEFAULT_PROGRESS_STALL_TIMEOUT)
     )

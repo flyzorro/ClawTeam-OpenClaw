@@ -2226,6 +2226,7 @@ def identity_set(
     resolved_signal_path = (
         runtime_completion_signal_path
         or os.environ.get("CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH")
+        or os.environ.get("OPENCLAW_RUNTIME_COMPLETION_SIGNAL_PATH")
         or None
     )
     if resolved_signal_path:

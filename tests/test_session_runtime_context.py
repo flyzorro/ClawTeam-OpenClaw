@@ -116,6 +116,38 @@ def test_identity_set_shell_outputs_pure_exports(monkeypatch, tmp_path):
 
 
 
+def test_identity_set_shell_falls_back_to_openclaw_runtime_completion_signal_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "identity",
+            "set",
+            "--agent-id",
+            "qa-1",
+            "--agent-name",
+            "qa1",
+            "--agent-type",
+            "general-purpose",
+            "--team",
+            "demo",
+            "--data-dir",
+            "/tmp/demo data",
+            "--shell",
+        ],
+        env={
+            "HOME": str(tmp_path / "home"),
+            "OPENCLAW_RUNTIME_COMPLETION_SIGNAL_PATH": "/tmp/openclaw completion.json",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "export CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH='/tmp/openclaw completion.json'" in result.output.strip().splitlines()
+
+
+
 def test_inbox_receive_fails_closed_when_session_has_no_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _register_runtime_worker(monkeypatch, tmp_path)
