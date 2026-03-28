@@ -23,7 +23,7 @@ from clawteam.services.task_update_service import (
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
 from clawteam.team.tasks import TaskStore, TransitionApplyResult
-from clawteam.workspace.git import probe_remote_head
+from clawteam.workspace.git import probe_remote_head, resolve_remote_probe_target
 
 
 def _git_run(repo: Path, *args: str) -> str:
@@ -806,6 +806,47 @@ next_action: handoff to qa
 
     assert result.task.status == TaskStatus.completed
     assert result.task.description.startswith("DEV_RESULT")
+
+
+def test_resolve_remote_probe_target_prefers_current_branch_mapping(tmp_path):
+    repo, _ = _init_repo_with_baseline(tmp_path)
+    _git_run(repo, "remote", "add", "origin", "https://example.com/origin.git")
+    _git_run(repo, "remote", "add", "flyzorro", "https://example.com/flyzorro.git")
+    _git_run(repo, "config", "branch.main.remote", "origin")
+    _git_run(repo, "config", "branch.main.merge", "refs/heads/main")
+
+    target = resolve_remote_probe_target(repo)
+
+    assert target.remote == "origin"
+    assert target.branch == "main"
+    assert "branch.main.remote/merge -> origin/main" in target.evidence
+
+
+def test_resolve_remote_probe_target_prefers_launch_time_mapping_over_branch_mapping(tmp_path):
+    repo, _ = _init_repo_with_baseline(tmp_path)
+    _git_run(repo, "remote", "add", "origin", "https://example.com/origin.git")
+    _git_run(repo, "remote", "add", "flyzorro", "https://example.com/flyzorro.git")
+    _git_run(repo, "config", "branch.main.remote", "origin")
+    _git_run(repo, "config", "branch.main.merge", "refs/heads/main")
+    _git_run(repo, "config", "clawteam.targetRemote", "flyzorro")
+    _git_run(repo, "config", "clawteam.targetBranch", "refs/heads/release")
+
+    target = resolve_remote_probe_target(repo)
+
+    assert target.remote == "flyzorro"
+    assert target.branch == "release"
+    assert "clawteam.targetRemote/clawteam.targetBranch" in target.evidence
+
+
+def test_resolve_remote_probe_target_fails_closed_on_ambiguous_remotes(tmp_path):
+    repo, _ = _init_repo_with_baseline(tmp_path)
+    _git_run(repo, "remote", "add", "origin", "https://example.com/origin.git")
+    _git_run(repo, "remote", "add", "flyzorro", "https://example.com/flyzorro.git")
+
+    with pytest.raises(Exception) as exc:
+        resolve_remote_probe_target(repo)
+
+    assert "unable to resolve setup probe target unambiguously" in str(exc.value)
 
 
 def test_probe_remote_head_classifies_timeout_as_cached_only(monkeypatch, tmp_path):

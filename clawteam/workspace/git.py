@@ -18,6 +18,13 @@ class RemoteProbeResult:
     evidence: str
 
 
+@dataclass(frozen=True)
+class RemoteProbeTarget:
+    remote: str
+    branch: str
+    evidence: str
+
+
 def _run(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
     """Run a git command and return stripped stdout."""
     result = subprocess.run(
@@ -29,6 +36,10 @@ def _run(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
     if check and result.returncode != 0:
         raise GitError(f"git {' '.join(args)}: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def _git_config_get(repo: Path, key: str) -> str:
+    return _run(["config", "--get", key], cwd=repo, check=False).strip()
 
 
 def is_git_repo(path: Path) -> bool:
@@ -140,6 +151,91 @@ def diff_stat(worktree_path: Path) -> str:
     if unstaged:
         parts.append(f"Unstaged:\n{unstaged}")
     return "\n".join(parts) if parts else "Clean — no changes."
+
+
+def resolve_remote_probe_target(
+    repo: Path,
+    *,
+    remote: str | None = None,
+    branch: str | None = None,
+) -> RemoteProbeTarget:
+    """Resolve the authoritative target remote/branch for setup probing.
+
+    Resolution order:
+    1. Explicit arguments when both are supplied.
+    2. Launch/runtime mapping persisted in git config: clawteam.targetRemote + clawteam.targetBranch.
+    3. Current attached branch mapping: branch.<name>.remote + branch.<name>.merge.
+    4. Fallback to branch.main.remote + branch.main.merge only when present.
+
+    This intentionally does not treat `upstream` as default authority and fails closed
+    when the target remote cannot be resolved unambiguously.
+    """
+    repo = repo_root(repo)
+    explicit_remote = str(remote or "").strip()
+    explicit_branch = str(branch or "").strip()
+    if bool(explicit_remote) ^ bool(explicit_branch):
+        raise GitError("remote probe target requires both remote and branch when either is supplied")
+    if explicit_remote and explicit_branch:
+        return RemoteProbeTarget(
+            remote=explicit_remote,
+            branch=explicit_branch,
+            evidence=f"explicit target {explicit_remote}/{explicit_branch}",
+        )
+
+    mapped_remote = _git_config_get(repo, "clawteam.targetRemote")
+    mapped_branch = _git_config_get(repo, "clawteam.targetBranch")
+    if mapped_remote and mapped_branch:
+        if mapped_remote == "upstream":
+            raise GitError("clawteam.targetRemote=upstream is not allowed as default probe authority")
+        return RemoteProbeTarget(
+            remote=mapped_remote,
+            branch=mapped_branch.removeprefix("refs/heads/"),
+            evidence=f"git config clawteam.targetRemote/clawteam.targetBranch -> {mapped_remote}/{mapped_branch.removeprefix('refs/heads/')}",
+        )
+
+    current = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=repo, check=False).strip()
+    if current:
+        branch_remote = _git_config_get(repo, f"branch.{current}.remote")
+        branch_merge = _git_config_get(repo, f"branch.{current}.merge")
+        if branch_remote and branch_merge:
+            if branch_remote == "upstream":
+                raise GitError(f"branch.{current}.remote resolves to upstream; explicit target mapping required")
+            return RemoteProbeTarget(
+                remote=branch_remote,
+                branch=branch_merge.removeprefix("refs/heads/"),
+                evidence=(
+                    f"current branch mapping branch.{current}.remote/merge -> "
+                    f"{branch_remote}/{branch_merge.removeprefix('refs/heads/')}"
+                ),
+            )
+
+    main_remote = _git_config_get(repo, "branch.main.remote")
+    main_merge = _git_config_get(repo, "branch.main.merge")
+    if main_remote and main_merge:
+        if main_remote == "upstream":
+            raise GitError("branch.main.remote resolves to upstream; explicit target mapping required")
+        return RemoteProbeTarget(
+            remote=main_remote,
+            branch=main_merge.removeprefix("refs/heads/"),
+            evidence=f"branch.main.remote/merge -> {main_remote}/{main_merge.removeprefix('refs/heads/')}",
+        )
+
+    remotes_raw = _run(["remote"], cwd=repo, check=False)
+    remotes = [line.strip() for line in remotes_raw.splitlines() if line.strip() and line.strip() != "upstream"]
+    if len(remotes) == 1:
+        candidate = remotes[0]
+        if _run(["rev-parse", "--verify", "refs/heads/main"], cwd=repo, check=False).strip():
+            return RemoteProbeTarget(
+                remote=candidate,
+                branch="main",
+                evidence=f"single non-upstream remote fallback with local refs/heads/main -> {candidate}/main",
+            )
+
+    if not remotes:
+        raise GitError("no non-upstream git remotes available for setup probe target resolution")
+    raise GitError(
+        "unable to resolve setup probe target unambiguously; set clawteam.targetRemote/clawteam.targetBranch or use an attached branch mapping"
+    )
 
 
 def probe_remote_head(

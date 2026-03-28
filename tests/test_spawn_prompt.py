@@ -78,5 +78,7 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert "SETUP_RESULT must include exactly these headings" in prompt
     assert "SETUP_RESULT remote_status must be confirmed_latest, cached_only, or unreachable" in prompt
     assert "do not rely on Linux-only `timeout`" in prompt
+    assert "resolve the target repo first instead of hardcoding a remote" in prompt
+    assert "resolve_remote_probe_target(Path('.'))" in prompt
     assert "REVIEW_RESULT must include exactly these headings" in prompt
     assert "architecture_review" in prompt

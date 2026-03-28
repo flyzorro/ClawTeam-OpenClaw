@@ -302,10 +302,12 @@ Do not:
 Setup contract (must satisfy or fail closed):
 1. Remote gate
    - 先产出 `git remote -v`
-   - 再产出 `git rev-parse remotes/flyzorro/main || true`
-   - 再尝试 `git ls-remote --heads flyzorro main`
+   - 必须先解析 launch-time target repo identity / 当前 target repo mapping；不要硬编码 remote，也不要默认相信 upstream
+   - 可优先用内建 helper：`python3 - <<'PY'` / `from pathlib import Path` / `from clawteam.workspace.git import probe_remote_head, resolve_remote_probe_target` / `target = resolve_remote_probe_target(Path('.'))` / `print(target)` / `print(probe_remote_head(Path('.'), remote=target.remote, branch=target.branch))`
+   - 需要时再补充 `git rev-parse remotes/<resolved-remote>/<resolved-branch> || true`
    - 若需要有界探测，不要依赖 Linux 专属 `timeout`；改用 `python3` / subprocess timeout 或宿主工具层 timeout，保证 macOS 也能跑
-   - 若 `ls-remote` 成功，才能声称 latest main 已确认
+   - 若 target 无法唯一解析，必须 fail closed，不得猜测 remote/branch
+   - 若 `ls-remote` 成功，才能声称 latest target branch 已确认
    - 若失败/超时，只能明确写 `remote_status: cached_only` 或 `remote_status: unreachable`
 2. Detached worktree gate
    - 必须真实创建 detached worktree
