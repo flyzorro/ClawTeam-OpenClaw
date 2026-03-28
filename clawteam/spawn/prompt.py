@@ -25,9 +25,10 @@ def build_agent_prompt(
     workspace_branch: str = "",
     memory_scope: str = "",
     task_execution_id: str = "",
+    clawteam_bin: str = "",
 ) -> str:
     """Build agent prompt: identity + task + optional workspace info."""
-    clawteam_bin = resolve_clawteam_executable()
+    clawteam_bin = clawteam_bin or resolve_clawteam_executable(cwd=workspace_dir or None)
     shell_env = [
         ("CLAWTEAM_AGENT_NAME", agent_name),
         ("CLAWTEAM_AGENT_ID", agent_id),
