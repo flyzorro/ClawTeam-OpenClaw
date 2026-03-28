@@ -999,6 +999,40 @@ def test_parse_runtime_completion_envelope_rejects_invalid_schema():
 
 
 
+def test_apply_terminal_intent_converts_service_validation_error_to_terminal_rejected(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    store = TaskStore("demo")
+    task = store.create(subject="Fix thing", description="Real task", owner="qa1")
+    task = store.update(task.id, status=TaskStatus.in_progress, caller="qa1")
+
+    def fake_validate_completion(*args, **kwargs):
+        raise worker_runtime.TaskUpdateValidationError("structured completion invalid")
+
+    monkeypatch.setattr(worker_runtime, "validate_completion", fake_validate_completion)
+
+    result = worker_runtime.apply_terminal_intent(
+        team_name="demo",
+        agent_name="qa1",
+        intent=worker_runtime.TerminalIntent(
+            task_id=task.id,
+            execution_id=task.active_execution_id,
+            terminal_status=TaskStatus.completed,
+            reason="runtime terminal recovered from runtime_completion_envelope",
+            evidence="completion envelope only",
+            source="completion_envelope",
+        ),
+    )
+
+    assert result["status"] == "terminal_rejected"
+    assert result["rejectionReason"] == "structured_completion_validation_failed"
+    assert result["validationError"] == "structured completion invalid"
+
+    updated = store.get(task.id)
+    assert updated is not None
+    assert updated.status == TaskStatus.in_progress
+
+
+
 def test_apply_terminal_intent_rejects_completed_structured_task_when_description_is_placeholder(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     store = TaskStore("demo")

@@ -14,14 +14,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 from clawteam.delivery.failure_notifier import notify_task_failure
-from clawteam.services.task_update_service import TaskUpdateRequest, TaskUpdateValidationError, validate_completion
+from clawteam.services.task_update_service import (
+    TaskUpdateRequest,
+    TaskUpdateValidationError,
+    validate_completion,
+)
 from clawteam.spawn.cli_env import resolve_clawteam_executable
 from clawteam.spawn.registry import unregister_agent
 from clawteam.task.terminal_commands import build_terminal_task_update_command
 from clawteam.task.transition import (
     DUPLICATE_TERMINAL_CONFLICTING_STATUS,
     DUPLICATE_TERMINAL_SAME_STATUS,
-    TaskTransitionValidationError,
 )
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import TaskStatus
@@ -878,7 +881,7 @@ def apply_terminal_intent(
                 ),
                 all_tasks=store.list_tasks(),
             )
-        except (TaskUpdateValidationError, TaskTransitionValidationError) as exc:
+        except TaskUpdateValidationError as exc:
             return {
                 "status": "terminal_rejected",
                 "taskId": intent.task_id,
