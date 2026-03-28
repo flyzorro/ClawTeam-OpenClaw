@@ -9,7 +9,11 @@ import tempfile
 from pathlib import Path
 
 from clawteam.spawn.base import SpawnBackend
-from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
+from clawteam.spawn.cli_env import (
+    ClawteamExecutableResolutionError,
+    build_spawn_path,
+    resolve_clawteam_executable,
+)
 from clawteam.spawn.command_validation import normalize_spawn_command, validate_spawn_command
 
 
@@ -32,7 +36,10 @@ class SubprocessBackend(SpawnBackend):
         skip_permissions: bool = False,
     ) -> str:
         spawn_env = os.environ.copy()
-        clawteam_bin = resolve_clawteam_executable()
+        try:
+            clawteam_bin = resolve_clawteam_executable(cwd=cwd, require_same_source=True)
+        except ClawteamExecutableResolutionError as exc:
+            return f"Error: {exc}"
         spawn_env.update({
             "CLAWTEAM_AGENT_ID": agent_id,
             "CLAWTEAM_AGENT_NAME": agent_name,
@@ -58,7 +65,14 @@ class SubprocessBackend(SpawnBackend):
             spawn_env["CLAWTEAM_WORKSPACE_DIR"] = cwd
         if env:
             spawn_env.update(env)
-        spawn_env["PATH"] = build_spawn_path(spawn_env.get("PATH"))
+        try:
+            spawn_env["PATH"] = build_spawn_path(
+                spawn_env.get("PATH"),
+                cwd=cwd,
+                require_same_source=True,
+            )
+        except ClawteamExecutableResolutionError as exc:
+            return f"Error: {exc}"
         if os.path.isabs(clawteam_bin):
             spawn_env.setdefault("CLAWTEAM_BIN", clawteam_bin)
 

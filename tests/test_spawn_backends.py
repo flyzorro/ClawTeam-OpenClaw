@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import sys
 
-from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
+import pytest
+
+from clawteam.spawn.cli_env import (
+    ClawteamExecutableResolutionError,
+    build_spawn_path,
+    resolve_clawteam_executable,
+)
 from clawteam.spawn.subprocess_backend import SubprocessBackend
 from clawteam.spawn.registry import current_runtime_generation, get_agent_runtime_state, register_agent
 from clawteam.spawn.tmux_backend import (
@@ -201,6 +207,54 @@ def test_tmux_backend_terminates_existing_runtime_before_spawn(monkeypatch, tmp_
     assert result == "Agent 'worker1' spawned in tmux (clawteam-demo-team:worker1)"
     assert len(terminate_calls) == 1
     assert terminate_calls[0][:2] == ("demo-team", "worker1")
+
+
+def test_resolve_clawteam_executable_prefers_repo_local_venv_when_present(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "clawteam").mkdir(parents=True)
+    (repo / "clawteam" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='clawteam'\nversion='0.0.0'\n", encoding="utf-8")
+    repo_bin = repo / ".venv" / "bin" / "clawteam"
+    repo_bin.parent.mkdir(parents=True)
+    repo_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    resolved = resolve_clawteam_executable(cwd=repo)
+
+    assert resolved == str(repo_bin.resolve())
+
+
+def test_resolve_clawteam_executable_fails_closed_for_repo_without_local_venv(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "clawteam").mkdir(parents=True)
+    (repo / "clawteam" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='clawteam'\nversion='0.0.0'\n", encoding="utf-8")
+
+    with pytest.raises(ClawteamExecutableResolutionError):
+        resolve_clawteam_executable(cwd=repo, require_same_source=True)
+
+
+def test_subprocess_backend_fails_closed_when_repo_local_venv_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    repo = tmp_path / "repo"
+    (repo / "clawteam").mkdir(parents=True)
+    (repo / "clawteam" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='clawteam'\nversion='0.0.0'\n", encoding="utf-8")
+
+    backend = SubprocessBackend()
+    result = backend.spawn(
+        command=["openclaw"],
+        agent_name="worker1",
+        agent_id="agent-1",
+        agent_type="general-purpose",
+        team_name="demo-team",
+        cwd=str(repo),
+    )
+
+    assert "requires pinned clawteam binary" in result
+    assert ".venv/bin/clawteam" in result
 
 
 def test_tmux_backend_returns_error_when_command_missing(monkeypatch, tmp_path):

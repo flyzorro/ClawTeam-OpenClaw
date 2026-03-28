@@ -12,7 +12,11 @@ import time
 from pathlib import Path
 
 from clawteam.spawn.base import SpawnBackend
-from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
+from clawteam.spawn.cli_env import (
+    ClawteamExecutableResolutionError,
+    build_spawn_path,
+    resolve_clawteam_executable,
+)
 from clawteam.spawn.command_validation import normalize_spawn_command, validate_spawn_command
 
 
@@ -42,7 +46,10 @@ class TmuxBackend(SpawnBackend):
             return "Error: tmux not installed"
 
         session_name = f"clawteam-{team_name}"
-        clawteam_bin = resolve_clawteam_executable()
+        try:
+            clawteam_bin = resolve_clawteam_executable(cwd=cwd, require_same_source=True)
+        except ClawteamExecutableResolutionError as exc:
+            return f"Error: {exc}"
         env_vars = {
             "CLAWTEAM_AGENT_ID": agent_id,
             "CLAWTEAM_AGENT_NAME": agent_name,
@@ -68,7 +75,14 @@ class TmuxBackend(SpawnBackend):
             env_vars["CLAWTEAM_WORKSPACE_DIR"] = cwd
         if env:
             env_vars.update(env)
-        env_vars["PATH"] = build_spawn_path(env_vars.get("PATH", os.environ.get("PATH")))
+        try:
+            env_vars["PATH"] = build_spawn_path(
+                env_vars.get("PATH", os.environ.get("PATH")),
+                cwd=cwd,
+                require_same_source=True,
+            )
+        except ClawteamExecutableResolutionError as exc:
+            return f"Error: {exc}"
         if os.path.isabs(clawteam_bin):
             env_vars.setdefault("CLAWTEAM_BIN", clawteam_bin)
 
