@@ -674,6 +674,7 @@ def _propagate_resolved_scope_to_targets(
     scope_warnings: list[dict[str, Any]] | None = None,
     runtime_handoff: dict[str, Any] | None = None,
     feature_scope: dict[str, Any] | None = None,
+    lane_authority: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     for target_id in target_ids:
         target = store.get(target_id)
@@ -694,6 +695,14 @@ def _propagate_resolved_scope_to_targets(
             )
         if runtime_handoff is not None:
             patched_metadata["setup_runtime_handoff"] = runtime_handoff
+        if runtime_handoff is not None and isinstance(feature_scope, dict) and isinstance(lane_authority, dict):
+            shared_contract = _derive_shared_contract(
+                feature_scope=feature_scope,
+                lane_authority=lane_authority,
+                runtime_handoff=runtime_handoff,
+            )
+            if shared_contract is not None:
+                patched_metadata["shared_contract"] = shared_contract
         if runtime_handoff is not None and "## Setup Runtime Handoff" not in patched_description:
             patched_description = (patched_description.rstrip() + "\n\n" + _render_runtime_handoff_context(runtime_handoff)).strip()
         store.update(
@@ -980,6 +989,86 @@ def _render_lane_authority_context(authority: dict[str, Any]) -> str:
     )
 
 
+def _runtime_handoff_contract(runtime_handoff: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(runtime_handoff, dict):
+        return None
+    payload: dict[str, Any] = {}
+    for key in (
+        "detached_worktree",
+        "detached_head",
+        "remote_status",
+        "remote_head",
+        "venv_path",
+    ):
+        value = str(runtime_handoff.get(key) or "").strip()
+        if value:
+            payload[key] = value
+    for key in ("activation_commands", "baseline_commands", "install_commands"):
+        values = [str(item).strip() for item in (runtime_handoff.get(key) or []) if str(item).strip()]
+        if values:
+            payload[key] = values
+    return payload or None
+
+
+def _derive_shared_contract(
+    *,
+    feature_scope: dict[str, Any],
+    lane_authority: dict[str, dict[str, Any]],
+    runtime_handoff: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    execution_shape = _infer_execution_shape(feature_scope)
+    if execution_shape != "full-stack":
+        return None
+
+    backend = lane_authority.get("backend") if isinstance(lane_authority, dict) else None
+    frontend = lane_authority.get("frontend") if isinstance(lane_authority, dict) else None
+    if not isinstance(backend, dict) or not isinstance(frontend, dict):
+        return None
+    if not backend.get("meaningful") or not frontend.get("meaningful"):
+        return None
+
+    backend_roots = [str(item) for item in backend.get("allowed_roots") or [] if str(item).strip()]
+    frontend_roots = [str(item) for item in frontend.get("allowed_roots") or [] if str(item).strip()]
+    backend_targets = [str(item) for item in ((backend.get("primary_evidence") or {}).get("targets") or []) if str(item).strip()]
+    frontend_targets = [str(item) for item in ((frontend.get("primary_evidence") or {}).get("targets") or []) if str(item).strip()]
+    if not backend_roots or not frontend_roots or not backend_targets or not frontend_targets:
+        return None
+    if not set(backend_roots).isdisjoint(set(frontend_roots)):
+        return None
+    if not set(backend_targets).isdisjoint(set(frontend_targets)):
+        return None
+
+    runtime_contract = _runtime_handoff_contract(runtime_handoff)
+    qa_commands = list(runtime_contract.get("baseline_commands") or []) if isinstance(runtime_contract, dict) else []
+
+    return {
+        "contract_version": 1,
+        "contract_kind": "split_lane_shared_contract",
+        "execution_shape": execution_shape,
+        "provider_contract": {
+            "lane": "backend",
+            "allowed_roots": backend_roots,
+            "allowed_layers": [str(item) for item in backend.get("allowed_layers") or [] if str(item).strip()],
+            "verified_targets": backend_targets,
+            "runtime_handoff": runtime_contract,
+        },
+        "consumer_contract": {
+            "lane": "frontend",
+            "allowed_roots": frontend_roots,
+            "allowed_layers": [str(item) for item in frontend.get("allowed_layers") or [] if str(item).strip()],
+            "verified_targets": frontend_targets,
+            "runtime_handoff": runtime_contract,
+        },
+        "qa_contract": {
+            "lanes": ["backend", "frontend"],
+            "provider_verified_targets": backend_targets,
+            "consumer_verified_targets": frontend_targets,
+            "verification_commands": qa_commands,
+            "runtime_handoff_required": runtime_contract is None,
+        },
+    }
+
+
 def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> tuple[TaskItem, TaskTransitionPlan, dict[str, Any]]:
     metadata = scope_task.metadata if isinstance(scope_task.metadata, dict) else {}
     workflow_definition = metadata.get("workflow_definition")
@@ -1012,13 +1101,8 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
     execution_shape = _infer_execution_shape(feature_scope)
     _validate_materialization_budget(feature_scope)
     lane_authority = _build_lane_authority(feature_scope)
-    dual_lane_full_stack = (
-        execution_shape == "full-stack"
-        and lane_authority["backend"]["meaningful"]
-        and lane_authority["frontend"]["meaningful"]
-        and set(lane_authority["backend"]["allowed_roots"]).isdisjoint(set(lane_authority["frontend"]["allowed_roots"]))
-        and set(lane_authority["backend"]["primary_evidence"]["targets"]).isdisjoint(set(lane_authority["frontend"]["primary_evidence"]["targets"]))
-    )
+    shared_contract = _derive_shared_contract(feature_scope=feature_scope, lane_authority=lane_authority)
+    dual_lane_full_stack = execution_shape == "full-stack" and shared_contract is not None
     selected_subjects = {
         "ui-only": [
             _FIVE_STEP_SETUP_SUBJECT,
@@ -1080,6 +1164,8 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
             "execution_shape": execution_shape,
             "scope_task_id": scope_task.id,
         }
+        if shared_contract is not None:
+            task_metadata["lane_authority"] = lane_authority
         if isinstance(scope_warnings, list):
             task_metadata["scope_audit_warnings"] = scope_warnings
         if authored_task.get("message_type"):
@@ -1089,6 +1175,15 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
         lane_slice_authority = subject_lane_authority.get(subject)
         if lane_slice_authority is not None:
             task_metadata["lane_slice_authority"] = lane_slice_authority
+        if shared_contract is not None and subject in {
+            _FIVE_STEP_IMPL_A_SUBJECT,
+            _FIVE_STEP_IMPL_B_SUBJECT,
+            _FIVE_STEP_QA_A_SUBJECT,
+            _FIVE_STEP_QA_B_SUBJECT,
+            _FIVE_STEP_REVIEW_SUBJECT,
+            _FIVE_STEP_DELIVER_SUBJECT,
+        }:
+            task_metadata["shared_contract"] = shared_contract
         if on_fail_subjects:
             task_metadata["on_fail"] = [created_ids_by_subject[dep] for dep in on_fail_subjects]
 
@@ -1115,6 +1210,8 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
     updated_metadata["deferred_materialization_case"] = DEFERRED_MATERIALIZATION_CASE
     updated_metadata["execution_shape"] = execution_shape
     updated_metadata["lane_authority"] = lane_authority
+    if shared_contract is not None:
+        updated_metadata["shared_contract"] = shared_contract
     updated_metadata["lane_materialization"] = "dual_lane" if dual_lane_full_stack else "single_lane_fail_closed"
     updated_metadata["materialized_task_ids"] = {
         subject: created_ids_by_subject[subject] for subject in selected_subjects if subject in created_ids_by_subject
@@ -1141,6 +1238,7 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
             "execution_shape": execution_shape,
             "lane_materialization": "dual_lane" if dual_lane_full_stack else "single_lane_fail_closed",
             "lane_authority": lane_authority,
+            "shared_contract": shared_contract,
             "created_task_ids": {subject: created_ids_by_subject[subject] for subject in selected_subjects if subject in created_ids_by_subject},
             "released_root_task_ids": list(root_ids_to_wake),
             "deferred_subjects": list(updated_metadata["workflow_definition"]["deferred_subjects"]),
@@ -1203,6 +1301,7 @@ def execute_task_update_effects(
     scope_payload = _scope_payload(task)
     scope_warnings = task.metadata.get("scope_audit_warnings") if isinstance(task.metadata, dict) else None
     feature_scope = task.metadata.get("feature_scope") if isinstance(task.metadata, dict) else None
+    lane_authority = task.metadata.get("lane_authority") if isinstance(task.metadata, dict) else None
     runtime_handoff = _setup_runtime_handoff_payload(task)
     if isinstance(task.metadata, dict) and task.metadata.get("message_type") == "SETUP_RESULT" and runtime_handoff:
         current_metadata = dict(task.metadata)
@@ -1219,6 +1318,7 @@ def execute_task_update_effects(
             scope_warnings=scope_warnings if isinstance(scope_warnings, list) else None,
             runtime_handoff=runtime_handoff,
             feature_scope=feature_scope if isinstance(feature_scope, dict) else None,
+            lane_authority=lane_authority if isinstance(lane_authority, dict) else None,
         )
 
     wake = None

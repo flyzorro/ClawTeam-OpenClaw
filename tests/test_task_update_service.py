@@ -1851,6 +1851,106 @@ def test_execute_task_update_effects_propagates_setup_runtime_handoff_to_depende
     assert "Treat this handoff as runtime contract" in updated_impl.description
 
 
+def test_execute_task_update_effects_enriches_shared_contract_from_setup_runtime_handoff(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "config1", "config1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    lane_authority = {
+        "backend": {
+            "lane": "backend",
+            "allowed_roots": ["server/"],
+            "allowed_layers": ["backend", "api"],
+            "meaningful": True,
+            "primary_evidence": {"roots": ["server/"], "layers": ["backend", "api"], "targets": ["server/src/routes/member-login.ts"]},
+        },
+        "frontend": {
+            "lane": "frontend",
+            "allowed_roots": ["mobile/"],
+            "allowed_layers": ["mobile-ui"],
+            "meaningful": True,
+            "primary_evidence": {"roots": ["mobile/"], "layers": ["mobile-ui"], "targets": ["mobile/app/members/login.tsx"]},
+        },
+    }
+    setup = store.create(
+        "Prepare repo, branch, env, and runnable baseline",
+        owner="config1",
+        metadata={
+            "message_type": "SETUP_RESULT",
+            "feature_scope": {
+                "execution_shape": "full-stack",
+                "change_budget": {
+                    "allowed_layers": ["mobile-ui", "backend", "api"],
+                    "allowed_operations": ["edit-existing"],
+                    "allowed_roots": ["mobile/app/", "server/"],
+                    "forbidden_layers": ["web-ui"],
+                },
+            },
+            "lane_authority": lane_authority,
+        },
+    )
+    setup = store.update(
+        setup.id,
+        status=TaskStatus.completed,
+        caller="config1",
+        description=(
+            "SETUP_RESULT\n"
+            "status: completed\n"
+            "remote_status: cached_only\n"
+            "remote_head: 03bdc8f\n"
+            "detached_worktree: /tmp/demo/.worktrees/setup-123\n"
+            "detached_head: 9e8f87f\n"
+            "install:\n"
+            "- python3 -m venv .venv && source .venv/bin/activate && python -m pip install -e '.[dev]' -> success\n"
+            "baseline_validation:\n"
+            "- source .venv/bin/activate && pytest -q -> 336 passed in 2.30s\n"
+            "known_limitations:\n"
+            "- none\n"
+            "next_action: handoff to implement"
+        ),
+    )
+    assert setup is not None
+    impl = store.create(
+        "Implement fix",
+        owner="dev1",
+        description="Original implement brief",
+        metadata={"lane_slice_authority": lane_authority["backend"]},
+    )
+
+    monkeypatch.setattr(
+        "clawteam.services.task_update_service.wake_tasks_to_pending",
+        lambda *args, **kwargs: [{"taskId": impl.id, "owner": "dev1", "respawned": False}],
+    )
+
+    execute_task_update_effects(
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+            failure_notifier=lambda team, task, caller: None,
+        ),
+        task=setup,
+        caller="config1",
+        wake_owner=False,
+        message="",
+        dependent_ids_to_wake=[impl.id],
+        failed_targets_to_wake=[],
+    )
+
+    updated_impl = store.get(impl.id)
+    assert updated_impl is not None
+    assert updated_impl.metadata["shared_contract"]["provider_contract"]["runtime_handoff"]["detached_worktree"] == "/tmp/demo/.worktrees/setup-123"
+    assert updated_impl.metadata["shared_contract"]["consumer_contract"]["runtime_handoff"]["venv_path"] == ".venv"
+    assert updated_impl.metadata["shared_contract"]["qa_contract"]["verification_commands"] == [
+        "source .venv/bin/activate && pytest -q -> 336 passed in 2.30s"
+    ]
+    assert updated_impl.metadata["shared_contract"]["qa_contract"]["runtime_handoff_required"] is False
+
+
 def test_execute_task_update_rejects_scope_completion_without_structured_description(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
@@ -3339,9 +3439,14 @@ Deliver the mobile members login UI update and the backend members login API upd
     tasks = {task.subject: task for task in store.list_tasks()}
     assert result.effects.deferred_materialization["execution_shape"] == "full-stack"
     assert result.effects.deferred_materialization["lane_materialization"] == "dual_lane"
+    assert result.effects.deferred_materialization["shared_contract"]["provider_contract"]["lane"] == "backend"
+    assert result.effects.deferred_materialization["shared_contract"]["consumer_contract"]["verified_targets"] == ["mobile/app/members/login.tsx"]
+    assert result.effects.deferred_materialization["shared_contract"]["qa_contract"]["runtime_handoff_required"] is True
     assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["allowed_roots"] == ["server/"]
+    assert tasks["Implement assigned change slice A with real validation"].metadata["shared_contract"]["provider_contract"]["verified_targets"] == ["server/src/routes/member-login.ts"]
     assert tasks["Implement assigned change slice B with real validation"].metadata["lane_slice_authority"]["allowed_roots"] == ["mobile/"]
     assert tasks["Implement assigned change slice B with real validation"].metadata["lane_slice_authority"]["primary_evidence"]["targets"] == ["mobile/app/members/login.tsx"]
+    assert tasks["Implement assigned change slice B with real validation"].metadata["shared_contract"]["consumer_contract"]["lane"] == "frontend"
     assert "allowed_roots: mobile/" in tasks["Implement assigned change slice B with real validation"].description
 
 
