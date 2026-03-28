@@ -339,6 +339,7 @@ def _spawn_existing_agent(
         user=os.environ.get("CLAWTEAM_USER", ""),
         workspace_dir=cwd or "",
         workspace_branch=workspace_branch,
+        clawteam_bin=pinned_bin,
     )
 
     command = ["openclaw"]

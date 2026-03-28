@@ -36,7 +36,7 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     pinned = "/tmp/custom bin/clawteam"
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", data_dir)
     monkeypatch.setenv("CLAWTEAM_RUNTIME_COMPLETION_SIGNAL_PATH", "/tmp/runtime completion.json")
-    monkeypatch.setattr("clawteam.spawn.prompt.resolve_clawteam_executable", lambda: pinned)
+    monkeypatch.setattr("clawteam.spawn.prompt.resolve_clawteam_executable", lambda cwd=None: pinned)
 
     prompt = build_agent_prompt(
         agent_name="qa one",
@@ -83,3 +83,30 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert "detached_head must equal remote_head" in prompt
     assert "REVIEW_RESULT must include exactly these headings" in prompt
     assert "architecture_review" in prompt
+
+
+def test_build_agent_prompt_honors_explicit_clawteam_bin_for_retry_paths(monkeypatch):
+    monkeypatch.delenv("CLAWTEAM_BIN", raising=False)
+    monkeypatch.setattr("clawteam.spawn.prompt.resolve_clawteam_executable", lambda cwd=None: "/usr/local/bin/clawteam")
+
+    prompt = build_agent_prompt(
+        agent_name="qa one",
+        agent_id="qa-1",
+        agent_type="general-purpose",
+        team_name="demo team",
+        leader_name="leader",
+        task="Run the regression",
+        workspace_dir="/tmp/detached-worktree",
+        clawteam_bin="/tmp/repo/.venv/bin/clawteam",
+        task_execution_id="task-123-exec-9",
+    )
+
+    assert "/tmp/repo/.venv/bin/clawteam identity set" in prompt
+    assert build_terminal_task_update_command(
+        executable="/tmp/repo/.venv/bin/clawteam",
+        team_name="demo team",
+        task_id="<task-id>",
+        status="completed",
+        execution_id="task-123-exec-9",
+    ) in prompt
+    assert "/usr/local/bin/clawteam" not in prompt

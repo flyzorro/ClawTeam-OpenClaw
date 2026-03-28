@@ -208,7 +208,7 @@ def build_worker_task_prompt(
     if task.description:
         lines.extend(["", "## Description", task.description])
     lines.extend(_render_setup_runtime_handoff_prompt_block(task))
-    clawteam_bin = resolve_clawteam_executable()
+    clawteam_bin = resolve_clawteam_executable(cwd=os.environ.get("CLAWTEAM_WORKSPACE_DIR") or os.getcwd())
     shell_exports = [
         ("CLAWTEAM_AGENT_NAME", agent_name),
         ("CLAWTEAM_AGENT_ID", os.environ.get("CLAWTEAM_AGENT_ID", agent_name)),
@@ -239,12 +239,14 @@ def build_worker_task_prompt(
         ])
 
     terminal_complete_cmd = build_terminal_task_update_command(
+        executable=clawteam_bin,
         team_name=team_name,
         task_id=task.id,
         status="completed",
         execution_id=getattr(task, "active_execution_id", ""),
     )
     terminal_fail_cmd = build_terminal_task_update_command(
+        executable=clawteam_bin,
         team_name=team_name,
         task_id=task.id,
         status="failed",

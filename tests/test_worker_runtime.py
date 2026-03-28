@@ -94,7 +94,7 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     monkeypatch.setenv("CLAWTEAM_AGENT_ID", "qa 1-id")
     monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "general purpose")
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data dir"))
-    monkeypatch.setattr(worker_runtime, "resolve_clawteam_executable", lambda: "/tmp/custom bin/clawteam")
+    monkeypatch.setattr(worker_runtime, "resolve_clawteam_executable", lambda cwd=None: "/tmp/custom bin/clawteam")
 
     task = TaskStore("demo").create(subject="Fix thing", description="Real task", owner="qa1")
     prompt = build_worker_task_prompt(
@@ -132,7 +132,12 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert "QA_RESULT status may be pass, pass_with_risk, fail, or blocked" in prompt
     assert "The task brief in Description is the current scope authority." in prompt
     assert "they do not by themselves approve new endpoints, APIs, schemas, pages, tabs, workflows, or deliverables." in prompt
-    assert build_terminal_task_update_command(team_name="demo team", task_id=task.id, status="completed") in prompt
+    assert build_terminal_task_update_command(
+        executable="/tmp/custom bin/clawteam",
+        team_name="demo team",
+        task_id=task.id,
+        status="completed",
+    ) in prompt
     assert "--execution-id" not in prompt
 
 
