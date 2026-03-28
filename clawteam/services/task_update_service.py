@@ -895,10 +895,12 @@ def _build_lane_authority(feature_scope: dict[str, Any]) -> dict[str, dict[str, 
     lane_roots = {
         "frontend": [root for root in budget.allowed_roots if _infer_layers_from_paths([root]) & {"web-ui", "mobile-ui"}],
         "backend": [root for root in budget.allowed_roots if _infer_layers_from_paths([root]) & {"backend", "api", "schema", "db"}],
+        "combined": list(budget.allowed_roots),
     }
     lane_layers = {
         "frontend": [layer for layer in budget.allowed_layers if layer in {"web-ui", "mobile-ui"}],
         "backend": [layer for layer in budget.allowed_layers if layer in {"backend", "api", "schema", "db", "crawler", "auth"}],
+        "combined": list(budget.allowed_layers),
     }
     lane_targets = {
         "frontend": [
@@ -911,10 +913,11 @@ def _build_lane_authority(feature_scope: dict[str, Any]) -> dict[str, dict[str, 
             for target in validated_targets
             if target.kind in _BACKEND_TARGET_KINDS or _infer_layers_from_paths([target.path]) & {"backend", "api", "schema", "db"}
         ],
+        "combined": [target.model_dump(mode="python") for target in validated_targets],
     }
 
     authority: dict[str, dict[str, Any]] = {}
-    for lane_name in ("frontend", "backend"):
+    for lane_name in ("frontend", "backend", "combined"):
         authority[lane_name] = {
             "lane": lane_name,
             "allowed_roots": lane_roots[lane_name],
@@ -1020,9 +1023,10 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
             _FIVE_STEP_DELIVER_SUBJECT,
         ]
 
+    single_lane_authority = lane_authority["combined"] if execution_shape == "full-stack" and not dual_lane_full_stack else lane_authority["backend"]
     subject_lane_authority = {
-        _FIVE_STEP_IMPL_A_SUBJECT: lane_authority["backend"],
-        _FIVE_STEP_QA_A_SUBJECT: lane_authority["backend"],
+        _FIVE_STEP_IMPL_A_SUBJECT: single_lane_authority,
+        _FIVE_STEP_QA_A_SUBJECT: single_lane_authority,
         _FIVE_STEP_IMPL_B_SUBJECT: lane_authority["frontend"],
         _FIVE_STEP_QA_B_SUBJECT: lane_authority["frontend"],
     }

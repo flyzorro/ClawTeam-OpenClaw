@@ -3287,8 +3287,10 @@ Deliver the members login backend API update and the existing members login UI u
     assert "Run scoped QA pass A on the real change" in tasks
     assert "Implement assigned change slice B with real validation" not in tasks
     assert "Run scoped QA pass B on the real change" not in tasks
-    assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["lane"] == "backend"
-    assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["meaningful"] is False
+    assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["lane"] == "combined"
+    assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["meaningful"] is True
+    assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["allowed_roots"] == ["src/"]
+    assert set(tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["allowed_layers"]) == {"web-ui", "backend", "api"}
 
 
 def test_execute_task_update_post_scope_mode_fails_closed_when_feature_scope_shape_is_missing(monkeypatch, tmp_path):
