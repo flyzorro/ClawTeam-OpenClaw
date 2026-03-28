@@ -296,6 +296,23 @@ def _git_changed_paths_since_head(*, repo_path: Path, base_head: str) -> set[str
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+def _normalize_declared_changed_file(*, repo_path: Path, raw_path: str) -> str | None:
+    value = str(raw_path or "").strip().strip("\"'")
+    if not value:
+        return None
+    pure = PurePath(value)
+    if pure.is_absolute():
+        try:
+            value = Path(value).resolve().relative_to(repo_path.resolve()).as_posix()
+        except (OSError, ValueError):
+            value = pure.as_posix()
+    else:
+        value = pure.as_posix()
+        while value.startswith("./"):
+            value = value[2:]
+    return value or None
+
+
 def _validate_setup_completion(existing: TaskItem, request: TaskUpdateRequest) -> None:
     if request.status != TaskStatus.completed:
         return
@@ -395,7 +412,11 @@ def _validate_dev_completion(existing: TaskItem, request: TaskUpdateRequest) -> 
             f"DEV_RESULT completion requires git diff evidence from detached_worktree: {exc}"
         ) from exc
 
-    declared_changed_files = {Path(item).as_posix() for item in changed_files}
+    declared_changed_files = {
+        normalized
+        for item in changed_files
+        if (normalized := _normalize_declared_changed_file(repo_path=repo_path, raw_path=item))
+    }
     substantive_matches = sorted(path for path in changed_since_base if path in declared_changed_files)
     if not substantive_matches:
         raise TaskTransitionValidationError(
