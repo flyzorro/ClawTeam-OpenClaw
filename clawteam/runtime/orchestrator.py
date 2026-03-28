@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from clawteam.execution.state import AWAITING_CLAIM, AWAITING_RELEASE, CLAIM_FAILED, merge_execution_metadata
 from clawteam.team.models import TaskItem, TaskStatus
 
 
@@ -39,6 +40,17 @@ class RuntimeOrchestrator:
         from clawteam.team.tasks import TaskStore
 
         release_message = message.strip() or f"Task {task.id} is released. Start now and report only real blockers."
+
+        store = TaskStore(self.team)
+        store.update(
+            task.id,
+            metadata=merge_execution_metadata(
+                task,
+                state=AWAITING_RELEASE,
+                released_at=task.updated_at,
+            ),
+            caller=caller,
+        )
 
         state_before = get_agent_runtime_state(self.team, task.owner)
         alive_before = True if state_before == "alive" else (None if state_before == "missing" else False)
@@ -81,26 +93,45 @@ class RuntimeOrchestrator:
             respawned = True
 
         notifier_result = None
-        if not replacement.replacement_required:
-            if respawn and state_before == "missing":
-                member = TeamManager.get_member(self.team, task.owner)
-                if member is None:
-                    raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
-                spawn_info = _spawn_existing_agent(
-                    team_name=self.team,
-                    agent_name=task.owner,
-                    agent_id=member.agent_id,
-                    agent_type=member.agent_type,
-                    task_prompt=_build_release_task_prompt(task, release_message),
-                    repo=self.repo,
-                    resume=True,
-                )
-                respawned = True
+        try:
+            if not replacement.replacement_required:
+                if respawn and state_before == "missing":
+                    member = TeamManager.get_member(self.team, task.owner)
+                    if member is None:
+                        raise RuntimeError(f"Owner '{task.owner}' is not a registered team member")
+                    spawn_info = _spawn_existing_agent(
+                        team_name=self.team,
+                        agent_name=task.owner,
+                        agent_id=member.agent_id,
+                        agent_type=member.agent_type,
+                        task_prompt=_build_release_task_prompt(task, release_message),
+                        repo=self.repo,
+                        resume=True,
+                    )
+                    respawned = True
 
-            notifier = release_notifier or notify_task_release
-            notifier_result = notifier(self.team, task, caller, release_message)
+                notifier = release_notifier or notify_task_release
+                notifier_result = notifier(self.team, task, caller, release_message)
+        except Exception as exc:
+            store.update(
+                task.id,
+                metadata=merge_execution_metadata(
+                    store.get(task.id) or task,
+                    state=CLAIM_FAILED,
+                    runtime_state_before=state_before or "unknown",
+                    respawn_attempted=bool(respawn),
+                    respawn_succeeded=respawned,
+                    message_sent=bool((notifier_result or {}).get("messageSent")),
+                    message_id=str((notifier_result or {}).get("messageId") or ""),
+                    replacement_required=replacement.replacement_required,
+                    replacement_reason=replacement.reason,
+                    last_error=str(exc),
+                ),
+                caller=caller,
+            )
+            raise
 
-        return {
+        result = {
             "messageSent": not replacement.replacement_required,
             "message": release_message,
             "ownerAliveBefore": alive_before,
@@ -116,6 +147,22 @@ class RuntimeOrchestrator:
             "clearedTaskSubjects": [item.subject for item in cleared_tasks],
             **(notifier_result or {}),
         }
+        store.update(
+            task.id,
+            metadata=merge_execution_metadata(
+                store.get(task.id) or task,
+                state=AWAITING_CLAIM,
+                runtime_state_before=state_before or "unknown",
+                respawn_attempted=bool(respawn),
+                respawn_succeeded=respawned,
+                message_sent=bool(result.get("messageSent")),
+                message_id=str(result.get("messageId") or ""),
+                replacement_required=replacement.replacement_required,
+                replacement_reason=replacement.reason,
+            ),
+            caller=caller,
+        )
+        return result
 
 
 def plan_replacement(*, store, task: TaskItem, state_before: str | None, respawn: bool) -> ReplacementDecision:

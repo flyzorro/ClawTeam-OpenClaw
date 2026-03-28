@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 import clawteam.worker_runtime as worker_runtime
 from clawteam.cli.commands import app
+from clawteam.execution.state import CLAIMED
 from clawteam.spawn.subprocess_backend import SubprocessBackend
 from clawteam.task.terminal_commands import build_terminal_task_update_command
 from clawteam.team.mailbox import MailboxManager
@@ -371,6 +372,9 @@ def test_run_worker_iteration_claims_and_dispatches_openclaw(monkeypatch, tmp_pa
     assert updated.last_terminal_status == "completed"
     assert updated.metadata["transition_log"][0]["case"] == "claim_execution"
     assert updated.metadata["transition_log"][-1]["accepted"] is True
+    assert updated.metadata["execution"]["state"] == CLAIMED
+    assert updated.metadata["execution"]["claim_observed"] is True
+    assert updated.metadata["execution"]["claimed_at"]
 
     acks = mailbox.receive("leader")
     assert len(acks) == 1
