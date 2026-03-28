@@ -88,7 +88,8 @@ def execute_task_release(
     except TaskLockError:
         raise
 
-    return TaskReleaseResult(task=task, release=release)
+    refreshed = ctx.store.get(task_id) or task
+    return TaskReleaseResult(task=refreshed, release=release)
 
 
 def describe_replacement_decision(release: dict[str, Any]) -> str:

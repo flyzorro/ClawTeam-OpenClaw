@@ -7,6 +7,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from clawteam.cli.commands import app
+from clawteam.execution.state import AWAITING_CLAIM, CLAIM_FAILED
 from clawteam.runtime.orchestrator import RuntimeOrchestrator, plan_replacement
 from clawteam.services.task_service import (
     TaskReleaseContext,
@@ -291,6 +292,58 @@ def test_execute_task_release_uses_injected_context(monkeypatch, tmp_path):
     assert result.release["messageSent"] is True
     assert result.release["messageId"] == "msg-1"
     assert notices == [{"team": "demo", "task": task.id, "caller": "leader", "message": "Start immediately"}]
+    assert result.task.metadata["execution"]["state"] == AWAITING_CLAIM
+    assert result.task.metadata["execution"]["runtime_state_before"] == "alive"
+    assert result.task.metadata["execution"]["respawn_attempted"] is True
+    assert result.task.metadata["execution"]["respawn_succeeded"] is False
+    assert result.task.metadata["execution"]["message_sent"] is True
+    assert result.task.metadata["execution"]["message_id"] == "msg-1"
+
+
+def test_execute_task_release_records_claim_failed_metadata(monkeypatch, tmp_path):
+    env = _team_env(tmp_path)
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", env["CLAWTEAM_DATA_DIR"])
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Functional QA", description="Check company directory", owner="qa1")
+
+    def fake_release_notifier(team, released_task, caller, message):
+        raise RuntimeError("notify boom")
+
+    monkeypatch.setattr("clawteam.spawn.registry.get_agent_runtime_state", lambda *_: "alive")
+
+    try:
+        execute_task_release(
+            task_id=task.id,
+            caller="leader",
+            request=TaskReleaseRequest(
+                message="Start immediately",
+                respawn=True,
+                force=False,
+            ),
+            ctx=TaskReleaseContext(
+                team="demo",
+                store=store,
+                runtime=RuntimeOrchestrator(team="demo", repo=str(tmp_path)),
+                release_notifier=fake_release_notifier,
+                repo=str(tmp_path),
+            ),
+        )
+        assert False, "expected notifier failure"
+    except RuntimeError as exc:
+        assert str(exc) == "notify boom"
+
+    updated = store.get(task.id)
+    assert updated is not None
+    assert updated.status == TaskStatus.pending
+    assert updated.metadata["execution"]["state"] == CLAIM_FAILED
+    assert updated.metadata["execution"]["runtime_state_before"] == "alive"
+    assert updated.metadata["execution"]["respawn_attempted"] is True
+    assert updated.metadata["execution"]["respawn_succeeded"] is False
+    assert updated.metadata["execution"]["last_error"] == "notify boom"
 
 
 def test_task_release_respawns_dead_owner_in_existing_workspace(monkeypatch, tmp_path):

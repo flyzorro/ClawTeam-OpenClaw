@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from clawteam.execution.state import CLAIMED, merge_execution_metadata
 from clawteam.task.transition import TaskTransitionDecision, plan_runtime_terminal_writeback
 from clawteam.team.models import TaskItem, TaskStatus, get_data_dir
 
@@ -269,6 +270,14 @@ class TaskStore:
                 task.active_execution_id = next_execution_id
                 task.active_execution_owner = task.locked_by or caller or task.owner
             task.status = TaskStatus.in_progress
+            task.metadata.update(
+                merge_execution_metadata(
+                    task,
+                    state=CLAIMED,
+                    claimed_at=_now_iso(),
+                    claim_observed=True,
+                )
+            )
             _append_transition_log(
                 task,
                 case_name=decision.case_name,
