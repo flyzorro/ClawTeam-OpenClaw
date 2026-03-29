@@ -50,6 +50,7 @@ from clawteam.templates import (
     read_feature_scope_metadata,
 )
 from clawteam.templates.launch import _BACKEND_TARGET_KINDS, _FRONTEND_TARGET_KINDS, _infer_layers_from_paths
+from clawteam.execution.state import WRITEBACK_APPLIED, merge_execution_metadata
 from clawteam.task.transition import (
     ReopenTaskEvent,
     TaskTransitionPlan,
@@ -1461,12 +1462,36 @@ def _apply_terminal_transition(
     metadata_to_apply: dict[str, Any] | None,
     metadata_keys_to_remove: list[str] | None,
     force: bool,
+    owner: str | None,
+    subject: str | None,
+    description: str | None,
+    add_blocks: list[str] | None,
+    add_blocked_by: list[str] | None,
 ) -> TransitionApplyResult | None:
-    if execution_id:
-        _decision_payload = _decision_to_payload(
-            decision,
-            default_case_name="terminal_writeback_without_execution_scope",
+    decision_payload = _decision_to_payload(
+        decision,
+        default_case_name="terminal_writeback_without_execution_scope",
+    )
+    case_name = str(decision_payload.get("case_name") or "terminal_writeback_without_execution_scope")
+
+    if case_name == "recover_watchdog_failed_completion":
+        return ctx.store.apply_transition_decision(
+            task_id,
+            decision=decision_payload,
+            status=status,
+            caller=caller,
+            execution_id=None,
+            metadata=metadata_to_apply,
+            metadata_keys_to_remove=metadata_keys_to_remove,
+            force=force,
+            owner=owner,
+            subject=subject,
+            description=description,
+            add_blocks=add_blocks,
+            add_blocked_by=add_blocked_by,
         )
+
+    if execution_id:
         runtime_decision, _task, apply_result = ctx.store.apply_runtime_terminal_writeback(
             task_id,
             status=status,
@@ -1475,7 +1500,12 @@ def _apply_terminal_transition(
             metadata=metadata_to_apply,
             metadata_keys_to_remove=metadata_keys_to_remove,
             force=force,
-            fallback_case_name=str(_decision_payload.get("case_name") or "worker_runtime_failed_closed"),
+            fallback_case_name=str(decision_payload.get("case_name") or "worker_runtime_failed_closed"),
+            owner=owner,
+            subject=subject,
+            description=description,
+            add_blocks=add_blocks,
+            add_blocked_by=add_blocked_by,
         )
         if runtime_decision is not None and not runtime_decision.accepted:
             raise RuntimeError(
@@ -1485,16 +1515,18 @@ def _apply_terminal_transition(
 
     return ctx.store.apply_transition_decision(
         task_id,
-        decision=_decision_to_payload(
-            decision,
-            default_case_name="terminal_writeback_without_execution_scope",
-        ),
+        decision=decision_payload,
         status=status,
         caller=caller,
         execution_id=execution_id,
         metadata=metadata_to_apply,
         metadata_keys_to_remove=metadata_keys_to_remove,
         force=force,
+        owner=owner,
+        subject=subject,
+        description=description,
+        add_blocks=add_blocks,
+        add_blocked_by=add_blocked_by,
     )
 
 
@@ -1665,7 +1697,22 @@ def execute_task_update(
             execution_id=request.execution_id,
         ) if request.status in (TaskStatus.completed, TaskStatus.failed) else None,
     ) if request.status in (TaskStatus.completed, TaskStatus.failed) else None
-    if execution_decision and not execution_decision.accepted:
+    recovery_decision = plan_watchdog_failed_completion_recovery(
+        existing=existing,
+        caller=caller,
+        requested_status=request.status,
+    )
+    if recovery_decision and recovery_decision.accepted:
+        metadata_keys_to_remove = recovery_decision.metadata_keys_to_remove
+        metadata = dict(plan.metadata_to_apply or {})
+        metadata.update(merge_execution_metadata(existing, state=WRITEBACK_APPLIED))
+        metadata.update(recovery_decision.metadata_to_apply or {})
+        plan = TaskUpdatePlan(
+            metadata_to_apply=metadata,
+            dependent_ids_to_wake=plan.dependent_ids_to_wake,
+            failed_targets_to_wake=plan.failed_targets_to_wake,
+        )
+    if execution_decision and not execution_decision.accepted and not (recovery_decision and recovery_decision.accepted):
         ctx.store.record_transition_rejection(
             task_id,
             case_name=execution_decision.case_name,
@@ -1675,20 +1722,6 @@ def execute_task_update(
         )
         raise RuntimeError(
             f"terminal writeback rejected: {execution_decision.rejection_reason}"
-        )
-    recovery_decision = plan_watchdog_failed_completion_recovery(
-        existing=existing,
-        caller=caller,
-        requested_status=request.status,
-    )
-    if recovery_decision and recovery_decision.accepted:
-        metadata_keys_to_remove = recovery_decision.metadata_keys_to_remove
-        metadata = dict(plan.metadata_to_apply or {})
-        metadata.update(recovery_decision.metadata_to_apply or {})
-        plan = TaskUpdatePlan(
-            metadata_to_apply=metadata,
-            dependent_ids_to_wake=plan.dependent_ids_to_wake,
-            failed_targets_to_wake=plan.failed_targets_to_wake,
         )
 
     validate_completion(existing, request, all_tasks=ctx.store.list_tasks())
@@ -1713,32 +1746,13 @@ def execute_task_update(
             metadata_to_apply=plan.metadata_to_apply,
             metadata_keys_to_remove=metadata_keys_to_remove,
             force=request.force,
+            owner=request.owner,
+            subject=request.subject,
+            description=request.description,
+            add_blocks=request.add_blocks,
+            add_blocked_by=request.add_blocked_by,
         )
         task = apply_result.task if apply_result is not None else None
-        if task is not None and any(
-            value is not None for value in (
-                request.owner,
-                request.subject,
-                request.description,
-                request.add_blocks,
-                request.add_blocked_by,
-            )
-        ):
-            task = _apply_generic_patch(
-                ctx=ctx,
-                task_id=task_id,
-                patch=TaskPatch(
-                    owner=request.owner,
-                    subject=request.subject,
-                    description=request.description,
-                    add_blocks=request.add_blocks,
-                    add_blocked_by=request.add_blocked_by,
-                    metadata=None,
-                    metadata_keys_to_remove=None,
-                ),
-                caller=caller,
-                force=request.force,
-            )
     elif request.status == TaskStatus.pending and existing.status != TaskStatus.pending:
         reopen_decision = plan_reopen_task(existing=existing, event=ReopenTaskEvent(caller=caller))
         if not reopen_decision.accepted:
