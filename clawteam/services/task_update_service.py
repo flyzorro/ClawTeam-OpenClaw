@@ -288,7 +288,7 @@ def _parse_required_structured_result(
 
 def _git_changed_paths_since_head(*, repo_path: Path, base_head: str) -> set[str]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", f"{base_head}..HEAD"],
+        ["git", "diff", "--name-only", base_head],
         cwd=repo_path,
         check=True,
         capture_output=True,
