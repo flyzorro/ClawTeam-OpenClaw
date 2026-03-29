@@ -394,7 +394,7 @@ def test_execute_task_update_execution_scoped_completion_persists_writeback_appl
             status=TaskStatus.completed,
             owner=None,
             subject=None,
-            description=None,
+            description="DEV_RESULT\nstatus: completed\nsummary: fixed",
             add_blocks=None,
             add_blocked_by=None,
             add_on_fail=None,
@@ -414,6 +414,77 @@ def test_execute_task_update_execution_scoped_completion_persists_writeback_appl
     assert result.apply_result is not None
     assert result.apply_result.case_name == "execution_scoped_terminal_writeback"
     assert result.task.metadata["execution"]["state"] == WRITEBACK_APPLIED
+    assert result.task.description == "DEV_RESULT\nstatus: completed\nsummary: fixed"
+    assert result.task.last_terminal_execution_id == claimed.task.active_execution_id
+    assert result.task.completed_at != ""
+
+
+
+def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure_with_execution_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    task = store.create("Implement fix", owner="dev1")
+    claimed = store.claim_execution(task.id, caller="dev1")
+    assert claimed is not None
+    execution_id = claimed.task.active_execution_id
+    failed = store.update(
+        task.id,
+        status=TaskStatus.failed,
+        caller="dev1",
+        execution_id=execution_id,
+        metadata={
+            "failure_kind": "complex",
+            "failure_root_cause": "worker agent turn stalled without terminal task update",
+            "failure_evidence": "watchdog",
+            "session_key": "clawteam-demo-dev1",
+            "stall_phase": "post_exit_without_terminal_task_update",
+            "watchdog_decision_at": claimed.task.updated_at,
+        },
+    )
+    assert failed is not None
+
+    result = execute_task_update(
+        task_id=task.id,
+        caller="dev1",
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: None,
+            failure_notifier=lambda team, task, caller: None,
+        ),
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description="QA_RESULT\nstatus: pass\nsummary: recovered",
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            execution_id=execution_id,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
+
+    assert result.apply_result is not None
+    assert result.apply_result.case_name == "recover_watchdog_failed_completion"
+    assert result.task.status == TaskStatus.completed
+    assert result.task.metadata["execution"]["state"] == WRITEBACK_APPLIED
+    assert result.task.description == "QA_RESULT\nstatus: pass\nsummary: recovered"
+    assert result.task.last_terminal_execution_id == execution_id
+    assert result.task.completed_at != ""
 
 
 def test_execute_task_update_effects_preserves_execution_metadata_when_adding_setup_runtime_handoff(monkeypatch, tmp_path):

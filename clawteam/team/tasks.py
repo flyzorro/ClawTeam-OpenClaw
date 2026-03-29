@@ -324,6 +324,11 @@ class TaskStore:
         metadata_keys_to_remove: list[str] | None = None,
         force: bool = False,
         case_name: str = "execution_scoped_terminal_writeback",
+        owner: str | None = None,
+        subject: str | None = None,
+        description: str | None = None,
+        add_blocks: list[str] | None = None,
+        add_blocked_by: list[str] | None = None,
     ) -> TransitionApplyResult | None:
         return self.apply_transition_decision(
             task_id,
@@ -334,6 +339,11 @@ class TaskStore:
             metadata=metadata,
             metadata_keys_to_remove=metadata_keys_to_remove,
             force=force,
+            owner=owner,
+            subject=subject,
+            description=description,
+            add_blocks=add_blocks,
+            add_blocked_by=add_blocked_by,
         )
 
     def apply_runtime_terminal_writeback(
@@ -347,6 +357,11 @@ class TaskStore:
         metadata_keys_to_remove: list[str] | None = None,
         force: bool = False,
         fallback_case_name: str = "worker_runtime_failed_closed",
+        owner: str | None = None,
+        subject: str | None = None,
+        description: str | None = None,
+        add_blocks: list[str] | None = None,
+        add_blocked_by: list[str] | None = None,
     ) -> tuple[TaskTransitionDecision | None, TaskItem | None, TransitionApplyResult | None]:
         existing = self.get(task_id)
         task = None
@@ -401,6 +416,11 @@ class TaskStore:
             metadata_keys_to_remove=metadata_keys_to_remove,
             force=force,
             case_name=applied_case,
+            owner=owner,
+            subject=subject,
+            description=description,
+            add_blocks=add_blocks,
+            add_blocked_by=add_blocked_by,
         )
         return decision, task, apply_result
 
