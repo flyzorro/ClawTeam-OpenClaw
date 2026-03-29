@@ -1064,6 +1064,55 @@ next_action: handoff to qa
     assert result.task.description.startswith("DEV_RESULT")
 
 
+def test_execute_task_update_accepts_dev_completion_with_uncommitted_repo_change(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    repo, detached_head = _init_repo_with_baseline(tmp_path)
+    changed = repo / "app.py"
+    changed.write_text("print('implemented without commit')\n", encoding="utf-8")
+
+    store = TaskStore("demo")
+    task = store.create(
+        "Implement assigned change slice B with real validation",
+        owner="dev1",
+        metadata={
+            "template_stage": "implement",
+            "message_type": "DEV_RESULT",
+            "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
+            "setup_runtime_handoff": {
+                "detached_worktree": str(repo),
+                "detached_head": detached_head,
+            },
+        },
+    )
+    claimed = store.update(task.id, status=TaskStatus.in_progress, caller="dev1")
+
+    good = """DEV_RESULT
+status: completed
+summary: implemented the repo change without creating a commit yet
+changed_files:
+- app.py
+validation:
+- git diff --name-only HEAD -- app.py -> app.py
+known_issues:
+- none
+next_action: handoff to qa
+"""
+
+    result = execute_task_update(
+        task_id=task.id,
+        caller="dev1",
+        ctx=TaskUpdateContext(store=store, team="demo", runtime=RuntimeOrchestrator(team="demo"), release_notifier=lambda *a, **k: None, failure_notifier=lambda *a, **k: None),
+        request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=good, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
+    )
+
+    assert result.task.status == TaskStatus.completed
+    assert result.task.description.startswith("DEV_RESULT")
+
+
 def test_execute_task_update_accepts_dev_completion_with_repo_absolute_changed_file(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
