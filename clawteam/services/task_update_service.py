@@ -619,16 +619,20 @@ def _scope_payload(task: TaskItem) -> dict[str, Any] | None:
 def _runtime_handoff_payload(task: TaskItem) -> dict[str, Any] | None:
     metadata = task.metadata if isinstance(task.metadata, dict) else {}
     existing = metadata.get("runtime_handoff")
-    if isinstance(existing, dict):
-        return existing
+    return existing if isinstance(existing, dict) else None
+
+
+def _build_setup_runtime_handoff(existing: TaskItem, request: TaskUpdateRequest) -> dict[str, Any] | None:
+    if request.status != TaskStatus.completed:
+        return None
+    metadata = existing.metadata or {}
     if metadata.get("message_type") != "SETUP_RESULT":
         return None
-    description = (task.description or "").strip()
-    if not description.startswith("SETUP_RESULT"):
-        return None
-    sections = _extract_structured_sections(description)
-    if not sections:
-        return None
+    _, sections, _ = _parse_required_structured_result(
+        existing=existing,
+        request=request,
+        message_type="SETUP_RESULT",
+    )
     return _infer_runtime_handoff_from_setup_sections(sections)
 
 
@@ -1304,13 +1308,6 @@ def execute_task_update_effects(
     feature_scope = task.metadata.get("feature_scope") if isinstance(task.metadata, dict) else None
     lane_authority = task.metadata.get("lane_authority") if isinstance(task.metadata, dict) else None
     runtime_handoff = _runtime_handoff_payload(task)
-    if isinstance(task.metadata, dict) and task.metadata.get("message_type") == "SETUP_RESULT" and runtime_handoff:
-        current_metadata = dict(task.metadata)
-        if current_metadata.get("runtime_handoff") != runtime_handoff:
-            current_metadata["runtime_handoff"] = runtime_handoff
-            updated_task = ctx.store.update(task.id, metadata=current_metadata)
-            if updated_task is not None:
-                task = updated_task
     if dependent_ids_to_wake and (scope_payload or runtime_handoff):
         _propagate_resolved_scope_to_targets(
             store=ctx.store,
@@ -1725,6 +1722,16 @@ def execute_task_update(
         )
 
     validate_completion(existing, request, all_tasks=ctx.store.list_tasks())
+
+    produced_runtime_handoff = _build_setup_runtime_handoff(existing, request)
+    if produced_runtime_handoff is not None:
+        metadata = dict(plan.metadata_to_apply or {})
+        metadata["runtime_handoff"] = produced_runtime_handoff
+        plan = TaskUpdatePlan(
+            metadata_to_apply=metadata,
+            dependent_ids_to_wake=plan.dependent_ids_to_wake,
+            failed_targets_to_wake=plan.failed_targets_to_wake,
+        )
 
     generic_patch = _build_generic_task_patch(
         request=request,

@@ -1915,26 +1915,49 @@ def test_execute_task_update_effects_propagates_runtime_handoff_to_dependents(mo
         owner="config1",
         metadata={"message_type": "SETUP_RESULT"},
     )
-    setup = store.update(
-        setup.id,
-        status=TaskStatus.completed,
+    setup = execute_task_update(
+        task_id=setup.id,
         caller="config1",
-        description=(
-            "SETUP_RESULT\n"
-            "status: completed\n"
-            "remote_status: cached_only\n"
-            "remote_head: 03bdc8f\n"
-            "detached_worktree: /tmp/demo/.worktrees/setup-123\n"
-            "detached_head: 9e8f87f\n"
-            "install:\n"
-            "- python3 -m venv .venv && source .venv/bin/activate && python -m pip install -e '.[dev]' -> success\n"
-            "baseline_validation:\n"
-            "- source .venv/bin/activate && pytest -q -> 336 passed in 2.30s\n"
-            "known_limitations:\n"
-            "- none\n"
-            "next_action: handoff to implement"
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: None,
+            failure_notifier=lambda team, task, caller: None,
         ),
-    )
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description=(
+                "SETUP_RESULT\n"
+                "status: completed\n"
+                "remote_status: cached_only\n"
+                "remote_head: 03bdc8f\n"
+                "detached_worktree: /tmp/demo/.worktrees/setup-123\n"
+                "detached_head: 9e8f87f\n"
+                "install:\n"
+                "- python3 -m venv .venv && source .venv/bin/activate && python -m pip install -e '.[dev]' -> success\n"
+                "baseline_validation:\n"
+                "- source .venv/bin/activate && pytest -q -> 336 passed in 2.30s\n"
+                "known_limitations:\n"
+                "- none\n"
+                "next_action: handoff to implement"
+            ),
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    ).task
     assert setup is not None
     impl = store.create("Implement fix", owner="dev1", description="Original implement brief")
 
@@ -2012,26 +2035,49 @@ def test_execute_task_update_effects_enriches_shared_contract_from_runtime_hando
             "lane_authority": lane_authority,
         },
     )
-    setup = store.update(
-        setup.id,
-        status=TaskStatus.completed,
+    setup = execute_task_update(
+        task_id=setup.id,
         caller="config1",
-        description=(
-            "SETUP_RESULT\n"
-            "status: completed\n"
-            "remote_status: cached_only\n"
-            "remote_head: 03bdc8f\n"
-            "detached_worktree: /tmp/demo/.worktrees/setup-123\n"
-            "detached_head: 9e8f87f\n"
-            "install:\n"
-            "- python3 -m venv .venv && source .venv/bin/activate && python -m pip install -e '.[dev]' -> success\n"
-            "baseline_validation:\n"
-            "- source .venv/bin/activate && pytest -q -> 336 passed in 2.30s\n"
-            "known_limitations:\n"
-            "- none\n"
-            "next_action: handoff to implement"
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: None,
+            failure_notifier=lambda team, task, caller: None,
         ),
-    )
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description=(
+                "SETUP_RESULT\n"
+                "status: completed\n"
+                "remote_status: cached_only\n"
+                "remote_head: 03bdc8f\n"
+                "detached_worktree: /tmp/demo/.worktrees/setup-123\n"
+                "detached_head: 9e8f87f\n"
+                "install:\n"
+                "- python3 -m venv .venv && source .venv/bin/activate && python -m pip install -e '.[dev]' -> success\n"
+                "baseline_validation:\n"
+                "- source .venv/bin/activate && pytest -q -> 336 passed in 2.30s\n"
+                "known_limitations:\n"
+                "- none\n"
+                "next_action: handoff to implement"
+            ),
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    ).task
     assert setup is not None
     impl = store.create(
         "Implement fix",
