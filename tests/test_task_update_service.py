@@ -487,7 +487,7 @@ def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure_w
     assert result.task.completed_at != ""
 
 
-def test_execute_task_update_effects_preserves_execution_metadata_when_adding_setup_runtime_handoff(monkeypatch, tmp_path):
+def test_execute_task_update_effects_preserves_execution_metadata_when_adding_runtime_handoff(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -986,7 +986,7 @@ def test_execute_task_update_rejects_dev_completion_without_substantive_repo_cha
             "template_stage": "implement",
             "message_type": "DEV_RESULT",
             "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
-            "setup_runtime_handoff": {
+            "runtime_handoff": {
                 "detached_worktree": str(repo),
                 "detached_head": detached_head,
             },
@@ -1033,7 +1033,7 @@ def test_execute_task_update_accepts_dev_completion_with_real_repo_change(monkey
             "template_stage": "implement",
             "message_type": "DEV_RESULT",
             "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
-            "setup_runtime_handoff": {
+            "runtime_handoff": {
                 "detached_worktree": str(repo),
                 "detached_head": detached_head,
             },
@@ -1082,7 +1082,7 @@ def test_execute_task_update_accepts_dev_completion_with_uncommitted_repo_change
             "template_stage": "implement",
             "message_type": "DEV_RESULT",
             "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
-            "setup_runtime_handoff": {
+            "runtime_handoff": {
                 "detached_worktree": str(repo),
                 "detached_head": detached_head,
             },
@@ -1134,7 +1134,7 @@ def test_execute_task_update_accepts_dev_completion_with_repo_absolute_changed_f
             "template_stage": "implement",
             "message_type": "DEV_RESULT",
             "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
-            "setup_runtime_handoff": {
+            "runtime_handoff": {
                 "detached_worktree": str(repo),
                 "detached_head": detached_head,
             },
@@ -1902,7 +1902,7 @@ def test_infer_runtime_handoff_from_setup_sections_extracts_venv_and_baseline_co
     assert payload["baseline_commands"] == ["source .venv/bin/activate && pytest -q -> 336 passed in 2.30s"]
 
 
-def test_execute_task_update_effects_propagates_setup_runtime_handoff_to_dependents(monkeypatch, tmp_path):
+def test_execute_task_update_effects_propagates_runtime_handoff_to_dependents(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -1963,15 +1963,15 @@ def test_execute_task_update_effects_propagates_setup_runtime_handoff_to_depende
     updated_impl = store.get(impl.id)
     assert updated_setup is not None and updated_impl is not None
     assert updated_setup.metadata["runtime_handoff"]["venv_path"] == ".venv"
-    assert updated_impl.metadata["setup_runtime_handoff"]["detached_worktree"] == "/tmp/demo/.worktrees/setup-123"
-    assert updated_impl.metadata["setup_runtime_handoff"]["baseline_commands"] == [
+    assert updated_impl.metadata["runtime_handoff"]["detached_worktree"] == "/tmp/demo/.worktrees/setup-123"
+    assert updated_impl.metadata["runtime_handoff"]["baseline_commands"] == [
         "source .venv/bin/activate && pytest -q -> 336 passed in 2.30s"
     ]
     assert "## Setup Runtime Handoff" in updated_impl.description
     assert "Treat this handoff as runtime contract" in updated_impl.description
 
 
-def test_execute_task_update_effects_enriches_shared_contract_from_setup_runtime_handoff(monkeypatch, tmp_path):
+def test_execute_task_update_effects_enriches_shared_contract_from_runtime_handoff(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")

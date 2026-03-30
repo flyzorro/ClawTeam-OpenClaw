@@ -152,7 +152,7 @@ def test_build_worker_task_prompt_includes_machine_runtime_handoff(monkeypatch, 
         description="Real task",
         owner="qa1",
         metadata={
-            "setup_runtime_handoff": {
+            "runtime_handoff": {
                 "detached_worktree": "/tmp/demo/.worktrees/setup-123",
                 "detached_head": "9e8f87f",
                 "remote_status": "cached_only",

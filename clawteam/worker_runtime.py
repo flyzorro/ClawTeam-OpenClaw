@@ -131,11 +131,11 @@ def load_startup_prompt(path: str | None) -> str:
         return ""
 
 
-def _render_setup_runtime_handoff_prompt_block(task: Any) -> list[str]:
+def _render_runtime_handoff_prompt_block(task: Any) -> list[str]:
     metadata = getattr(task, "metadata", None)
     if not isinstance(metadata, dict):
         return []
-    payload = metadata.get("setup_runtime_handoff")
+    payload = metadata.get("runtime_handoff")
     if not isinstance(payload, dict) or not payload:
         return []
 
@@ -207,7 +207,7 @@ def build_worker_task_prompt(
         ])
     if task.description:
         lines.extend(["", "## Description", task.description])
-    lines.extend(_render_setup_runtime_handoff_prompt_block(task))
+    lines.extend(_render_runtime_handoff_prompt_block(task))
     clawteam_bin = resolve_clawteam_executable(cwd=os.environ.get("CLAWTEAM_WORKSPACE_DIR") or os.getcwd())
     shell_exports = [
         ("CLAWTEAM_AGENT_NAME", agent_name),
