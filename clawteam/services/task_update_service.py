@@ -393,13 +393,13 @@ def _validate_dev_completion(existing: TaskItem, request: TaskUpdateRequest) -> 
     if not _looks_like_command_evidence_block(validation_block):
         raise TaskTransitionValidationError("DEV_RESULT completion requires validation evidence in `- <command> -> <result>` form")
 
-    runtime_handoff = metadata.get("setup_runtime_handoff") if isinstance(metadata, dict) else None
+    runtime_handoff = metadata.get("runtime_handoff") if isinstance(metadata, dict) else None
     detached_worktree = str((runtime_handoff or {}).get("detached_worktree") or "").strip()
     detached_head = str((runtime_handoff or {}).get("detached_head") or "").strip()
     if not detached_worktree or not detached_head:
-        raise TaskTransitionValidationError("DEV_RESULT completion requires setup_runtime_handoff with detached_worktree and detached_head")
+        raise TaskTransitionValidationError("DEV_RESULT completion requires runtime_handoff with detached_worktree and detached_head")
     if not _looks_like_sha(detached_head):
-        raise TaskTransitionValidationError("DEV_RESULT completion requires setup_runtime_handoff.detached_head to look like a git sha")
+        raise TaskTransitionValidationError("DEV_RESULT completion requires runtime_handoff.detached_head to look like a git sha")
 
     repo_path = Path(detached_worktree)
     if not repo_path.exists():
@@ -616,7 +616,7 @@ def _scope_payload(task: TaskItem) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _setup_runtime_handoff_payload(task: TaskItem) -> dict[str, Any] | None:
+def _runtime_handoff_payload(task: TaskItem) -> dict[str, Any] | None:
     metadata = task.metadata if isinstance(task.metadata, dict) else {}
     existing = metadata.get("runtime_handoff")
     if isinstance(existing, dict):
@@ -695,7 +695,7 @@ def _propagate_resolved_scope_to_targets(
                 scope_audit_warnings=scope_warnings,
             )
         if runtime_handoff is not None:
-            patched_metadata["setup_runtime_handoff"] = runtime_handoff
+            patched_metadata["runtime_handoff"] = runtime_handoff
         if runtime_handoff is not None and isinstance(feature_scope, dict) and isinstance(lane_authority, dict):
             shared_contract = _derive_shared_contract(
                 feature_scope=feature_scope,
@@ -1303,7 +1303,7 @@ def execute_task_update_effects(
     scope_warnings = task.metadata.get("scope_audit_warnings") if isinstance(task.metadata, dict) else None
     feature_scope = task.metadata.get("feature_scope") if isinstance(task.metadata, dict) else None
     lane_authority = task.metadata.get("lane_authority") if isinstance(task.metadata, dict) else None
-    runtime_handoff = _setup_runtime_handoff_payload(task)
+    runtime_handoff = _runtime_handoff_payload(task)
     if isinstance(task.metadata, dict) and task.metadata.get("message_type") == "SETUP_RESULT" and runtime_handoff:
         current_metadata = dict(task.metadata)
         if current_metadata.get("runtime_handoff") != runtime_handoff:
