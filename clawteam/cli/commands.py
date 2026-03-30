@@ -1029,7 +1029,7 @@ def task_update(
         _output({"error": str(e)}, lambda d: console.print(f"[red]{d['error']}[/red]"))
         raise typer.Exit(1)
 
-    task = result.task
+    task = result.outcome.task
     effects = result.effects
 
     data = _dump(task)

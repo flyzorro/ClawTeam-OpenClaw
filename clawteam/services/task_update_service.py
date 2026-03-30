@@ -621,10 +621,9 @@ class TaskUpdateRequest:
 
 
 @dataclass(frozen=True)
-class TaskUpdateResult:
+class TaskUpdateOutcome:
     task: TaskItem
     plan: TaskUpdatePlan
-    effects: TaskUpdateEffects
     transition_case: str | None = None
     apply_result: TransitionApplyResult | None = None
     effects_plan: TaskUpdateEffectsPlan | None = None
@@ -632,6 +631,60 @@ class TaskUpdateResult:
     def __post_init__(self) -> None:
         if self.transition_case is None and self.apply_result is not None:
             object.__setattr__(self, "transition_case", self.apply_result.case_name)
+
+
+@dataclass(frozen=True, init=False)
+class TaskUpdateResult:
+    outcome: TaskUpdateOutcome
+    effects: TaskUpdateEffects
+
+    def __init__(
+        self,
+        *,
+        effects: TaskUpdateEffects,
+        outcome: TaskUpdateOutcome | None = None,
+        task: TaskItem | None = None,
+        plan: TaskUpdatePlan | None = None,
+        transition_case: str | None = None,
+        apply_result: TransitionApplyResult | None = None,
+        effects_plan: TaskUpdateEffectsPlan | None = None,
+    ) -> None:
+        legacy_values = (task, plan, transition_case, apply_result, effects_plan)
+        if outcome is None:
+            if task is None or plan is None:
+                raise TypeError("TaskUpdateResult requires outcome or legacy task/plan fields")
+            outcome = TaskUpdateOutcome(
+                task=task,
+                plan=plan,
+                transition_case=transition_case,
+                apply_result=apply_result,
+                effects_plan=effects_plan,
+            )
+        elif any(value is not None for value in legacy_values):
+            raise TypeError("TaskUpdateResult accepts either outcome or legacy flat fields, not both")
+
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "effects", effects)
+
+    @property
+    def task(self) -> TaskItem:
+        return self.outcome.task
+
+    @property
+    def plan(self) -> TaskUpdatePlan:
+        return self.outcome.plan
+
+    @property
+    def transition_case(self) -> str | None:
+        return self.outcome.transition_case
+
+    @property
+    def apply_result(self) -> TransitionApplyResult | None:
+        return self.outcome.apply_result
+
+    @property
+    def effects_plan(self) -> TaskUpdateEffectsPlan | None:
+        return self.outcome.effects_plan
 
 
 @dataclass(frozen=True)
@@ -2002,18 +2055,19 @@ def execute_task_update(
         deferred_materialization=deferred_materialization_effect,
     )
 
+    outcome = TaskUpdateOutcome(
+        task=task,
+        plan=plan,
+        apply_result=apply_result,
+        effects_plan=effects_plan,
+    )
+
     effects = execute_task_update_effects(
         ctx=ctx,
-        task=task,
+        task=outcome.task,
         caller=caller,
         message=request.message,
         effects_plan=effects_plan,
     )
 
-    return TaskUpdateResult(
-        task=task,
-        plan=plan,
-        effects=effects,
-        apply_result=apply_result,
-        effects_plan=effects_plan,
-    )
+    return TaskUpdateResult(outcome=outcome, effects=effects)
