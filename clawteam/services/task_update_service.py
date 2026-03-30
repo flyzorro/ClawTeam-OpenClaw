@@ -990,6 +990,18 @@ def _apply_triage_followup_resolution(
     source = ctx.store.get(plan.source_task_id)
     if source is None:
         return None
+    metadata = source.metadata if isinstance(source.metadata, dict) else {}
+    if str(metadata.get("triage_followup_task_id") or "").strip() != triage.id:
+        return None
+    if str(metadata.get("triage_followup_resolution_id") or "").strip() == triage.id:
+        return None
+    if source.status.value != plan.source_status:
+        return None
+    if (
+        plan.source_status == TaskStatus.failed.value
+        and str(metadata.get("failure_kind") or "").strip() != "complex"
+    ):
+        return None
 
     apply_result = _apply_reopen_transition(
         ctx=ctx,

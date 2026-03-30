@@ -1893,7 +1893,7 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
     assert len(wake_calls) == 1
 
 
-def test_execute_task_update_effects_uses_precomputed_triage_resolution_authority(monkeypatch, tmp_path):
+def _prepare_precomputed_triage_resolution(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -1947,6 +1947,105 @@ def test_execute_task_update_effects_uses_precomputed_triage_resolution_authorit
     )
     assert effects_plan.triage_resolution is not None
 
+    return store, source, triage, ctx, effects_plan
+
+
+def test_execute_task_update_effects_applies_precomputed_triage_resolution_when_source_still_matches(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.pending
+    assert source_after.owner == "dev1"
+    assert source_after.metadata["triage_followup_resolution_id"] == triage.id
+    assert source_after.metadata["triage_followup_resolution_action"] == "fix and re-run qa"
+    assert wake_calls == [[source.id]]
+
+
+def test_execute_task_update_effects_rejects_stale_triage_relationship(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(
+        source.id,
+        metadata={
+            "failure_kind": "complex",
+            "triage_followup_task_id": "other-triage",
+        },
+        caller="qa1",
+    )
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.failed
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
+
+
+def test_execute_task_update_effects_rejects_triage_resolution_status_drift(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(source.id, status=TaskStatus.pending, caller="qa1")
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.pending
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
+
+
+def test_execute_task_update_effects_rejects_triage_resolution_failure_kind_drift(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
     store.update(
         source.id,
         metadata={
@@ -1974,10 +2073,47 @@ def test_execute_task_update_effects_uses_precomputed_triage_resolution_authorit
 
     source_after = store.get(source.id)
     assert source_after is not None
-    assert source_after.status == TaskStatus.pending
-    assert source_after.owner == "dev1"
-    assert source_after.metadata["triage_followup_resolution_action"] == "fix and re-run qa"
-    assert wake_calls == [[source.id]]
+    assert source_after.status == TaskStatus.failed
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
+
+
+def test_execute_task_update_effects_rejects_already_resolved_triage_resolution(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(
+        source.id,
+        metadata={
+            "failure_kind": "complex",
+            "triage_followup_task_id": triage.id,
+            "triage_followup_resolution_id": triage.id,
+        },
+        caller="qa1",
+    )
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.failed
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
 
 
 def test_execute_task_update_triage_completion_requires_resolution(monkeypatch, tmp_path):
