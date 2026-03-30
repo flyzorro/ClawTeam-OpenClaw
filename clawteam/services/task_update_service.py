@@ -665,6 +665,26 @@ def _runtime_handoff_payload(task: TaskItem) -> dict[str, Any] | None:
     return existing if isinstance(existing, dict) else None
 
 
+def _runtime_handoff_from_shared_contract(task: TaskItem) -> dict[str, Any] | None:
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    shared_contract = metadata.get("shared_contract")
+    if not isinstance(shared_contract, dict):
+        return None
+
+    for contract_key in ("provider_contract", "consumer_contract"):
+        contract = shared_contract.get(contract_key)
+        if not isinstance(contract, dict):
+            continue
+        runtime_handoff = contract.get("runtime_handoff")
+        if isinstance(runtime_handoff, dict) and runtime_handoff:
+            return runtime_handoff
+    return None
+
+
+def _effective_runtime_handoff(task: TaskItem) -> dict[str, Any] | None:
+    return _runtime_handoff_payload(task) or _runtime_handoff_from_shared_contract(task)
+
+
 def _build_setup_runtime_handoff(existing: TaskItem, request: TaskUpdateRequest) -> dict[str, Any] | None:
     if request.status != TaskStatus.completed:
         return None
@@ -772,7 +792,7 @@ def _plan_scope_propagation(
     scope_warnings = task.metadata.get("scope_audit_warnings") if isinstance(task.metadata, dict) else None
     feature_scope = task.metadata.get("feature_scope") if isinstance(task.metadata, dict) else None
     lane_authority = task.metadata.get("lane_authority") if isinstance(task.metadata, dict) else None
-    runtime_handoff = _runtime_handoff_payload(task)
+    runtime_handoff = _effective_runtime_handoff(task)
     if not scope_payload and not runtime_handoff:
         return None
 
