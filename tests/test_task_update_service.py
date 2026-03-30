@@ -71,7 +71,7 @@ def test_task_update_outcome_explicit_transition_case_wins_over_apply_result(mon
     assert outcome.transition_case == "explicit_case"
 
 
-def test_task_update_result_wraps_outcome_and_preserves_compat_accessors(monkeypatch, tmp_path):
+def test_task_update_result_wraps_explicit_outcome(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -93,14 +93,13 @@ def test_task_update_result_wraps_outcome_and_preserves_compat_accessors(monkeyp
         outcome=outcome,
     )
 
+    assert result.outcome == outcome
     assert result.outcome.transition_case == "reopen_task"
-    assert result.task == task
-    assert result.plan == plan
-    assert result.transition_case == result.outcome.transition_case
-    assert result.apply_result == result.outcome.apply_result
+    assert result.outcome.task == task
+    assert result.outcome.plan == plan
 
 
-def test_task_update_result_accepts_legacy_flat_construction(monkeypatch, tmp_path):
+def test_task_update_result_rejects_legacy_flat_construction_and_accessors(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
@@ -109,13 +108,19 @@ def test_task_update_result_accepts_legacy_flat_construction(monkeypatch, tmp_pa
     plan = TaskUpdatePlan(metadata_to_apply={}, dependent_ids_to_wake=[], failed_targets_to_wake=[])
 
     result = TaskUpdateResult(
-        task=task,
-        plan=plan,
+        outcome=TaskUpdateOutcome(task=task, plan=plan),
         effects=TaskUpdateEffects(wake=None, auto_releases=[], failure_notice=None),
     )
 
-    assert result.outcome.task == task
-    assert result.outcome.plan == plan
+    with pytest.raises(AttributeError):
+        _ = result.task
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'task'"):
+        TaskUpdateResult(
+            task=task,
+            plan=plan,
+            effects=TaskUpdateEffects(wake=None, auto_releases=[], failure_notice=None),
+        )
 
 
 
@@ -241,9 +246,9 @@ def test_execute_task_update_persists_explicit_failed_task_metadata(monkeypatch,
         ),
     )
 
-    assert result.task.metadata["qa_result_status"] == "fail"
-    assert result.task.metadata["qa_risk_note"] == "main path still broken"
-    assert result.task.metadata["failure_target_files"] == ["clawteam/board/static/index.html"]
+    assert result.outcome.task.metadata["qa_result_status"] == "fail"
+    assert result.outcome.task.metadata["qa_risk_note"] == "main path still broken"
+    assert result.outcome.task.metadata["failure_target_files"] == ["clawteam/board/static/index.html"]
 
 
 def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure(monkeypatch, tmp_path):
@@ -580,7 +585,7 @@ def test_execute_task_update_effects_preserves_execution_metadata_when_adding_ru
             force=False,
         ),
     )
-    setup = result.task
+    setup = result.outcome.task
     impl = store.create("Implement fix", owner="dev1", description="Original implement brief")
 
     monkeypatch.setattr(
@@ -1005,8 +1010,8 @@ next_action: handoff to implement
         ),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.task.description.startswith("SETUP_RESULT")
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.task.description.startswith("SETUP_RESULT")
 
 
 def test_execute_task_update_rejects_dev_completion_without_substantive_repo_change(monkeypatch, tmp_path):
@@ -1098,8 +1103,8 @@ next_action: handoff to qa
         request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=good, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.task.description.startswith("DEV_RESULT")
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.task.description.startswith("DEV_RESULT")
 
 
 def test_execute_task_update_accepts_dev_completion_with_uncommitted_repo_change(monkeypatch, tmp_path):
@@ -1147,8 +1152,8 @@ next_action: handoff to qa
         request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=good, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.task.description.startswith("DEV_RESULT")
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.task.description.startswith("DEV_RESULT")
 
 
 def test_execute_task_update_accepts_dev_completion_with_repo_absolute_changed_file(monkeypatch, tmp_path):
@@ -1199,8 +1204,8 @@ next_action: handoff to qa
         request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=good, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.task.description.startswith("DEV_RESULT")
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.task.description.startswith("DEV_RESULT")
 
 
 def test_resolve_remote_probe_target_prefers_current_branch_mapping(tmp_path):
@@ -2003,7 +2008,7 @@ def test_execute_task_update_effects_propagates_runtime_handoff_to_dependents(mo
             message="",
             force=False,
         ),
-    ).task
+    ).outcome.task
     assert setup is not None
     impl = store.create("Implement fix", owner="dev1", description="Original implement brief")
 
@@ -2263,7 +2268,7 @@ def test_execute_task_update_effects_enriches_shared_contract_from_runtime_hando
             message="",
             force=False,
         ),
-    ).task
+    ).outcome.task
     assert setup is not None
     impl = store.create(
         "Implement fix",
@@ -2434,7 +2439,7 @@ Validate latest flyzorro/main from a clean detached worktree using real evidence
             force=False,
         ),
     )
-    assert updated.task.description == final_description
+    assert updated.outcome.task.description == final_description
 
     completed = execute_task_update(
         task_id=scope.id,
@@ -2466,8 +2471,8 @@ Validate latest flyzorro/main from a clean detached worktree using real evidence
             force=False,
         ),
     )
-    assert completed.task.status is TaskStatus.completed
-    resolved_scope = completed.task.metadata.get("resolved_scope")
+    assert completed.outcome.task.status is TaskStatus.completed
+    resolved_scope = completed.outcome.task.metadata.get("resolved_scope")
     assert isinstance(resolved_scope, dict)
     assert resolved_scope.get("sections", {}).get("scoped_brief") == (
         "Validate latest flyzorro/main from a clean detached worktree using real evidence only; do not mock; fail closed on uncertainty."
@@ -2550,8 +2555,8 @@ Ship the feature safely.
         ),
     )
 
-    assert result.task.status is TaskStatus.completed
-    assert result.task.metadata["feature_scope"] == {
+    assert result.outcome.task.status is TaskStatus.completed
+    assert result.outcome.task.metadata["feature_scope"] == {
         "version": "v1",
         "source_request": "Ship the feature safely",
         "scoped_brief": "Ship the feature safely.",
@@ -3181,7 +3186,7 @@ Polish the member list UI and ensure it is production-ready with no regressions.
     refreshed_scope = store.get(scope.id)
     refreshed_setup = store.get(setup.id)
 
-    assert result.task.status == TaskStatus.completed
+    assert result.outcome.task.status == TaskStatus.completed
     assert refreshed_scope.metadata["resolved_scope"]["sections"]["scoped_brief"] == (
         "Polish the member list UI and ensure it is production-ready with no regressions."
     )
@@ -3274,7 +3279,7 @@ Clarify the API behavior used by the current member list UI without adding new e
     )
 
     updated_setup = store.get(setup.id)
-    assert result.task.status == TaskStatus.completed
+    assert result.outcome.task.status == TaskStatus.completed
     assert updated_setup is not None
     assert updated_setup.metadata["resolved_scope"]["sections"]["scoped_brief"].startswith("Clarify the API behavior")
 
@@ -3372,7 +3377,7 @@ Deliver only the minimal safe fix.
     )
 
     updated_setup = store.get(setup.id)
-    assert result.task.metadata["resolved_scope"]["sections"]["scoped_brief"] == "Deliver only the minimal safe fix."
+    assert result.outcome.task.metadata["resolved_scope"]["sections"]["scoped_brief"] == "Deliver only the minimal safe fix."
     assert updated_setup is not None
     assert updated_setup.status == TaskStatus.pending
     assert updated_setup.metadata["resolved_scope"]["sections"]["source_request"] == "Ship the feature safely"
@@ -4089,7 +4094,7 @@ Polish the member list UI using the existing tests are representative assumption
     refreshed_scope = store.get(scope.id)
     refreshed_setup = store.get(setup.id)
 
-    assert result.task.status == TaskStatus.completed
+    assert result.outcome.task.status == TaskStatus.completed
     assert [warning["code"] for warning in refreshed_scope.metadata["scope_audit_warnings"]] == [
         "unknowns_promoted_to_scope",
         "assumptions_promoted_to_scope",
@@ -4174,4 +4179,4 @@ Deliver only the minimal safe fix.
         ),
     )
 
-    assert result.task.metadata["scope_audit_warnings"] == []
+    assert result.outcome.task.metadata["scope_audit_warnings"] == []
