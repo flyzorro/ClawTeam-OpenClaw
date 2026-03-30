@@ -6,7 +6,7 @@ import re
 import shlex
 import subprocess
 import time
-from io import TextIOBase
+from io import BufferedReader
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -116,8 +116,8 @@ class TerminalIntent:
 
 @dataclass
 class _PipeProgressState:
-    stdout_chunks: list[str]
-    stderr_chunks: list[str]
+    stdout_chunks: list[bytes]
+    stderr_chunks: list[bytes]
     stdout_bytes: int = 0
     stderr_bytes: int = 0
 
@@ -631,7 +631,7 @@ def _infer_upstream_failure_evidence(*parts: str) -> str:
     return "\n---\n".join(deduped)
 
 
-def _configure_nonblocking_text_pipe(pipe: TextIOBase | None) -> None:
+def _configure_nonblocking_pipe(pipe: BufferedReader | None) -> None:
     if pipe is None:
         return
     try:
@@ -640,22 +640,41 @@ def _configure_nonblocking_text_pipe(pipe: TextIOBase | None) -> None:
         return
 
 
-def _drain_text_pipe_nonblocking(pipe: TextIOBase | None, chunks: list[str]) -> int:
+def _drain_pipe_nonblocking(pipe: BufferedReader | None, chunks: list[bytes]) -> int:
     if pipe is None:
         return 0
+    try:
+        fileno = pipe.fileno()
+    except (AttributeError, OSError, ValueError):
+        fileno = None
     total = 0
     while True:
         try:
-            chunk = pipe.read()
+            if fileno is not None:
+                chunk = os.read(fileno, 65536)
+            else:
+                chunk = pipe.read()
         except BlockingIOError:
             break
         except OSError:
             break
-        if chunk in (None, ""):
+        if chunk in (None, b"", ""):
             break
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8", "replace")
         chunks.append(chunk)
         total += len(chunk)
     return total
+
+
+def _decode_pipe_chunks(chunks: list[bytes | str]) -> str:
+    normalized: list[bytes] = []
+    for chunk in chunks:
+        if isinstance(chunk, str):
+            normalized.append(chunk.encode("utf-8", "replace"))
+        else:
+            normalized.append(chunk)
+    return b"".join(normalized).decode("utf-8", errors="replace")
 
 
 def _collect_runtime_progress(
@@ -666,8 +685,8 @@ def _collect_runtime_progress(
     transcript_marker = _transcript_progress_marker(session_key)
     stdout_pipe = getattr(proc, "stdout", None)
     stderr_pipe = getattr(proc, "stderr", None)
-    pipe_state.stdout_bytes += _drain_text_pipe_nonblocking(stdout_pipe, pipe_state.stdout_chunks)
-    pipe_state.stderr_bytes += _drain_text_pipe_nonblocking(stderr_pipe, pipe_state.stderr_chunks)
+    pipe_state.stdout_bytes += _drain_pipe_nonblocking(stdout_pipe, pipe_state.stdout_chunks)
+    pipe_state.stderr_bytes += _drain_pipe_nonblocking(stderr_pipe, pipe_state.stderr_chunks)
     io_marker = (pipe_state.stdout_bytes, pipe_state.stderr_bytes)
     return transcript_marker, io_marker
 
@@ -688,10 +707,10 @@ def _run_agent_with_progress_watchdog(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
     )
-    _configure_nonblocking_text_pipe(getattr(proc, "stdout", None))
-    _configure_nonblocking_text_pipe(getattr(proc, "stderr", None))
+    _configure_nonblocking_pipe(getattr(proc, "stdout", None))
+    _configure_nonblocking_pipe(getattr(proc, "stderr", None))
     pipe_state = _PipeProgressState(stdout_chunks=[], stderr_chunks=[])
     started_at = time.monotonic()
     last_progress_at = started_at
@@ -708,8 +727,8 @@ def _run_agent_with_progress_watchdog(
             return subprocess.CompletedProcess(
                 command,
                 proc.returncode or 0,
-                "".join(pipe_state.stdout_chunks),
-                "".join(pipe_state.stderr_chunks),
+                _decode_pipe_chunks(pipe_state.stdout_chunks),
+                _decode_pipe_chunks(pipe_state.stderr_chunks),
             )
 
         now = time.monotonic()
@@ -743,8 +762,8 @@ def _run_agent_with_progress_watchdog(
                 f"{progress_stall_timeout_seconds:.0f}s\n"
                 f"transcript_marker: {transcript_marker}\n"
                 f"io_marker: {io_marker}\n"
-                f"stdout: {''.join(pipe_state.stdout_chunks).strip()}\n"
-                f"stderr: {''.join(pipe_state.stderr_chunks).strip()}\n"
+                f"stdout: {_decode_pipe_chunks(pipe_state.stdout_chunks).strip()}\n"
+                f"stderr: {_decode_pipe_chunks(pipe_state.stderr_chunks).strip()}\n"
                 f"transcript_tail:\n{tail}"
             )
 

@@ -1534,13 +1534,15 @@ def test_progress_watchdog_treats_stdout_growth_as_runtime_progress(monkeypatch,
 
     class DummyPipe:
         def __init__(self, chunks):
-            self._chunks = iter(chunks)
+            self._chunks = [chunk.encode("utf-8") for chunk in chunks]
 
         def fileno(self):
-            return 0
+            raise OSError("no fileno in test double")
 
         def read(self):
-            return next(self._chunks, "")
+            if not self._chunks:
+                return b""
+            return self._chunks.pop(0)
 
     class DummyProc:
         def __init__(self):
@@ -1579,6 +1581,67 @@ def test_progress_watchdog_treats_stdout_growth_as_runtime_progress(monkeypatch,
     assert "still working" in result.stdout
     assert "done" in result.stdout
 
+
+
+def test_progress_watchdog_uses_binary_pipes_to_avoid_nonblocking_text_decode_bug(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class DummyPipe:
+        def __init__(self):
+            self.calls = 0
+
+        def fileno(self):
+            return 123
+
+    class DummyProc:
+        def __init__(self):
+            self.returncode = None
+            self.stdout = DummyPipe()
+            self.stderr = DummyPipe()
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if self.poll_count >= 2:
+                self.returncode = 0
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def communicate(self):
+            return (b"done\n", b"")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: DummyProc())
+    monkeypatch.setattr(worker_runtime.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(worker_runtime.time, "sleep", lambda _: None)
+    monkeypatch.setattr(worker_runtime, "_transcript_progress_marker", lambda session_key: (0, 0))
+    monkeypatch.setattr(os, "set_blocking", lambda *args, **kwargs: None)
+
+    reads = iter([None, b"booting...", b"", b"", b""])
+
+    def fake_os_read(fd, size):
+        chunk = next(reads, b"")
+        if chunk is None:
+            raise BlockingIOError()
+        return chunk
+
+    monkeypatch.setattr(os, "read", fake_os_read)
+
+    result = worker_runtime._run_agent_with_progress_watchdog(
+        command=["openclaw", "agent"],
+        cwd=None,
+        env=os.environ.copy(),
+        session_key="clawteam-demo-qa1",
+        total_timeout_seconds=900,
+        progress_stall_timeout_seconds=1.0,
+        progress_poll_interval_seconds=0.01,
+    )
+
+    assert result.returncode == 0
+    assert "done" in result.stdout
+    assert result.stderr == "booting..."
 
 
 def test_post_exit_settle_detects_terminal_update_after_success(monkeypatch, tmp_path):
