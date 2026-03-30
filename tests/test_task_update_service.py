@@ -14,6 +14,7 @@ from clawteam.services.task_update_service import (
     TaskUpdateContext,
     TaskUpdateEffects,
     TaskUpdateEffectsPlan,
+    TaskUpdateOutcome,
     TaskUpdatePlan,
     TaskUpdateRequest,
     TaskUpdateResult,
@@ -49,17 +50,16 @@ def _init_repo_with_baseline(tmp_path: Path) -> tuple[Path, str]:
     return repo, _git_run(repo, "rev-parse", "HEAD")
 
 
-def test_task_update_result_explicit_transition_case_wins_over_apply_result(monkeypatch, tmp_path):
+def test_task_update_outcome_explicit_transition_case_wins_over_apply_result(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
     TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
     task = TaskStore("demo").create("Implement fix", owner="dev1")
 
-    result = TaskUpdateResult(
+    outcome = TaskUpdateOutcome(
         task=task,
         plan=TaskUpdatePlan(metadata_to_apply={}, dependent_ids_to_wake=[], failed_targets_to_wake=[]),
-        effects=TaskUpdateEffects(wake=None, auto_releases=[], failure_notice=None),
         transition_case="explicit_case",
         apply_result=TransitionApplyResult(
             task=task,
@@ -68,21 +68,19 @@ def test_task_update_result_explicit_transition_case_wins_over_apply_result(monk
         ),
     )
 
-    assert result.transition_case == "explicit_case"
+    assert outcome.transition_case == "explicit_case"
 
 
-
-def test_task_update_result_defaults_transition_case_from_apply_result(monkeypatch, tmp_path):
+def test_task_update_result_wraps_outcome_and_preserves_compat_accessors(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
     TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
     TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
     task = TaskStore("demo").create("Implement fix", owner="dev1")
-
-    result = TaskUpdateResult(
+    plan = TaskUpdatePlan(metadata_to_apply={}, dependent_ids_to_wake=[], failed_targets_to_wake=[])
+    outcome = TaskUpdateOutcome(
         task=task,
-        plan=TaskUpdatePlan(metadata_to_apply={}, dependent_ids_to_wake=[], failed_targets_to_wake=[]),
-        effects=TaskUpdateEffects(wake=None, auto_releases=[], failure_notice=None),
+        plan=plan,
         apply_result=TransitionApplyResult(
             task=task,
             accepted=True,
@@ -90,7 +88,34 @@ def test_task_update_result_defaults_transition_case_from_apply_result(monkeypat
         ),
     )
 
-    assert result.transition_case == "reopen_task"
+    result = TaskUpdateResult(
+        effects=TaskUpdateEffects(wake=None, auto_releases=[], failure_notice=None),
+        outcome=outcome,
+    )
+
+    assert result.outcome.transition_case == "reopen_task"
+    assert result.task == task
+    assert result.plan == plan
+    assert result.transition_case == result.outcome.transition_case
+    assert result.apply_result == result.outcome.apply_result
+
+
+def test_task_update_result_accepts_legacy_flat_construction(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+    task = TaskStore("demo").create("Implement fix", owner="dev1")
+    plan = TaskUpdatePlan(metadata_to_apply={}, dependent_ids_to_wake=[], failed_targets_to_wake=[])
+
+    result = TaskUpdateResult(
+        task=task,
+        plan=plan,
+        effects=TaskUpdateEffects(wake=None, auto_releases=[], failure_notice=None),
+    )
+
+    assert result.outcome.task == task
+    assert result.outcome.plan == plan
 
 
 
@@ -155,16 +180,16 @@ def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, t
         ),
     )
 
-    assert result.task.status == TaskStatus.failed
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "terminal_writeback_without_execution_scope"
-    assert result.transition_case == result.apply_result.case_name
-    assert result.plan.failed_targets_to_wake == []
-    assert result.effects_plan is not None
-    assert result.effects_plan.send_failure_notice is True
-    assert result.effects_plan.failed_targets_to_wake == []
-    assert result.effects_plan.triage_followup is not None
-    assert result.effects_plan.triage_followup.next_action == "triage owner"
+    assert result.outcome.task.status == TaskStatus.failed
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "terminal_writeback_without_execution_scope"
+    assert result.outcome.transition_case == result.outcome.apply_result.case_name
+    assert result.outcome.plan.failed_targets_to_wake == []
+    assert result.outcome.effects_plan is not None
+    assert result.outcome.effects_plan.send_failure_notice is True
+    assert result.outcome.effects_plan.failed_targets_to_wake == []
+    assert result.outcome.effects_plan.triage_followup is not None
+    assert result.outcome.effects_plan.triage_followup.next_action == "triage owner"
     assert result.effects.failure_notice is not None
     assert result.effects.failure_notice["failureNotice"] == "sent"
     assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
@@ -274,14 +299,14 @@ def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure(m
         ),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "recover_watchdog_failed_completion"
-    assert result.transition_case == "recover_watchdog_failed_completion"
-    assert result.task.metadata["recovered_from_watchdog_failure"] is True
-    assert result.task.metadata["watchdog_recovered_by"] == "dev1"
-    assert "failure_root_cause" not in result.task.metadata
-    assert "failure_evidence" not in result.task.metadata
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "recover_watchdog_failed_completion"
+    assert result.outcome.transition_case == "recover_watchdog_failed_completion"
+    assert result.outcome.task.metadata["recovered_from_watchdog_failure"] is True
+    assert result.outcome.task.metadata["watchdog_recovered_by"] == "dev1"
+    assert "failure_root_cause" not in result.outcome.task.metadata
+    assert "failure_evidence" not in result.outcome.task.metadata
 
 
 
@@ -326,9 +351,9 @@ def test_execute_task_update_allows_missing_execution_id_for_manual_claim_owner(
         ),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "terminal_writeback_without_execution_scope"
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "terminal_writeback_without_execution_scope"
 
 
 
@@ -372,9 +397,9 @@ def test_execute_task_update_allows_terminal_update_without_execution_id_when_no
         ),
     )
 
-    assert result.task.status == TaskStatus.completed
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "terminal_writeback_without_execution_scope"
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "terminal_writeback_without_execution_scope"
 
 
 
@@ -420,12 +445,12 @@ def test_execute_task_update_execution_scoped_completion_persists_writeback_appl
         ),
     )
 
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "execution_scoped_terminal_writeback"
-    assert result.task.metadata["execution"]["state"] == WRITEBACK_APPLIED
-    assert result.task.description == "DEV_RESULT\nstatus: completed\nsummary: fixed"
-    assert result.task.last_terminal_execution_id == claimed.task.active_execution_id
-    assert result.task.completed_at != ""
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "execution_scoped_terminal_writeback"
+    assert result.outcome.task.metadata["execution"]["state"] == WRITEBACK_APPLIED
+    assert result.outcome.task.description == "DEV_RESULT\nstatus: completed\nsummary: fixed"
+    assert result.outcome.task.last_terminal_execution_id == claimed.task.active_execution_id
+    assert result.outcome.task.completed_at != ""
 
 
 
@@ -487,13 +512,13 @@ def test_execute_task_update_allows_late_completed_to_recover_watchdog_failure_w
         ),
     )
 
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "recover_watchdog_failed_completion"
-    assert result.task.status == TaskStatus.completed
-    assert result.task.metadata["execution"]["state"] == WRITEBACK_APPLIED
-    assert result.task.description == "QA_RESULT\nstatus: pass\nsummary: recovered"
-    assert result.task.last_terminal_execution_id == execution_id
-    assert result.task.completed_at != ""
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "recover_watchdog_failed_completion"
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.task.metadata["execution"]["state"] == WRITEBACK_APPLIED
+    assert result.outcome.task.description == "QA_RESULT\nstatus: pass\nsummary: recovered"
+    assert result.outcome.task.last_terminal_execution_id == execution_id
+    assert result.outcome.task.completed_at != ""
 
 
 def test_execute_task_update_effects_preserves_execution_metadata_when_adding_runtime_handoff(monkeypatch, tmp_path):
@@ -1307,13 +1332,13 @@ def test_execute_task_update_reopen_with_patch_preserves_transition_result(monke
         ),
     )
 
-    assert result.apply_result is not None
-    assert result.apply_result.case_name == "reopen_task"
-    assert result.transition_case == "reopen_task"
-    assert result.task.status == TaskStatus.pending
-    assert result.task.subject == "Implement fix retry"
-    assert result.task.description == "retry with narrowed scope"
-    assert result.task.metadata["transition_log"][-1]["case"] == "reopen_task"
+    assert result.outcome.apply_result is not None
+    assert result.outcome.apply_result.case_name == "reopen_task"
+    assert result.outcome.transition_case == "reopen_task"
+    assert result.outcome.task.status == TaskStatus.pending
+    assert result.outcome.task.subject == "Implement fix retry"
+    assert result.outcome.task.description == "retry with narrowed scope"
+    assert result.outcome.task.metadata["transition_log"][-1]["case"] == "reopen_task"
 
 
 
@@ -1357,11 +1382,11 @@ def test_execute_task_update_uses_generic_status_update_without_transition_resul
         ),
     )
 
-    assert result.apply_result is None
-    assert result.transition_case is None
-    assert result.task.status == TaskStatus.in_progress
-    assert result.task.subject == "Implement fix in progress"
-    assert result.task.description == "started execution"
+    assert result.outcome.apply_result is None
+    assert result.outcome.transition_case is None
+    assert result.outcome.task.status == TaskStatus.in_progress
+    assert result.outcome.task.subject == "Implement fix in progress"
+    assert result.outcome.task.description == "started execution"
 
 
 
@@ -1405,11 +1430,11 @@ def test_execute_task_update_uses_generic_patch_for_non_transition_updates(monke
         ),
     )
 
-    assert result.apply_result is None
-    assert result.transition_case is None
-    assert result.task.subject == "Implement fix v2"
-    assert result.task.description == "narrowed scope"
-    assert result.task.metadata.get("transition_log") is None
+    assert result.outcome.apply_result is None
+    assert result.outcome.transition_case is None
+    assert result.outcome.task.subject == "Implement fix v2"
+    assert result.outcome.task.description == "narrowed scope"
+    assert result.outcome.task.metadata.get("transition_log") is None
 
 
 
@@ -2128,9 +2153,9 @@ next_action: handoff to QA""",
         ),
     )
 
-    assert result.effects_plan is not None
-    assert result.effects_plan.scope_propagation is not None
-    assert result.effects_plan.scope_propagation.runtime_handoff == direct_runtime_handoff
+    assert result.outcome.effects_plan is not None
+    assert result.outcome.effects_plan.scope_propagation is not None
+    assert result.outcome.effects_plan.scope_propagation.runtime_handoff == direct_runtime_handoff
     updated_qa = store.get(qa.id)
     assert updated_qa is not None
     assert updated_qa.metadata["runtime_handoff"] == direct_runtime_handoff
@@ -3507,11 +3532,11 @@ Deliver the backend API update and the member list UI update.
     ]
     assert tasks["Prepare repo, branch, env, and runnable baseline"].metadata["feature_scope"]["execution_shape"] == "full-stack"
     assert "## Resolved Scope Context" in tasks["Prepare repo, branch, env, and runnable baseline"].description
-    assert result.effects_plan is not None
-    assert result.effects_plan.dependent_ids_to_wake == [tasks["Prepare repo, branch, env, and runnable baseline"].id]
-    assert result.effects_plan.scope_propagation is not None
+    assert result.outcome.effects_plan is not None
+    assert result.outcome.effects_plan.dependent_ids_to_wake == [tasks["Prepare repo, branch, env, and runnable baseline"].id]
+    assert result.outcome.effects_plan.scope_propagation is not None
     assert result.effects.deferred_materialization["status"] == "materialized"
-    assert result.effects_plan.deferred_materialization["status"] == "materialized"
+    assert result.outcome.effects_plan.deferred_materialization["status"] == "materialized"
     assert result.effects.deferred_materialization["execution_shape"] == "full-stack"
     assert result.effects.deferred_materialization["lane_materialization"] == "dual_lane"
     assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["lane"] == "backend"
