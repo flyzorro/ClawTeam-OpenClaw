@@ -13,9 +13,12 @@ from clawteam.services.task_update_service import (
     FailureRepairPacket,
     TaskUpdateContext,
     TaskUpdateEffects,
+    TaskUpdateEffectsPlan,
     TaskUpdatePlan,
     TaskUpdateRequest,
     TaskUpdateResult,
+    TaskScopePropagationPlan,
+    TaskTriageFollowupPlan,
     TaskUpdateValidationError,
     _build_dependency_completion_message,
     _infer_runtime_handoff_from_setup_sections,
@@ -156,6 +159,11 @@ def test_execute_task_update_builds_full_result_and_updates_store(monkeypatch, t
     assert result.apply_result.case_name == "terminal_writeback_without_execution_scope"
     assert result.transition_case == result.apply_result.case_name
     assert result.plan.failed_targets_to_wake == []
+    assert result.effects_plan is not None
+    assert result.effects_plan.send_failure_notice is True
+    assert result.effects_plan.failed_targets_to_wake == []
+    assert result.effects_plan.triage_followup is not None
+    assert result.effects_plan.triage_followup.next_action == "triage owner"
     assert result.effects.failure_notice is not None
     assert result.effects.failure_notice["failureNotice"] == "sent"
     assert notices == [{"team": "demo", "task": qa.id, "caller": "qa1", "kind": "complex"}]
@@ -564,10 +572,14 @@ def test_execute_task_update_effects_preserves_execution_metadata_when_adding_ru
         ),
         task=setup,
         caller="config1",
-        wake_owner=False,
         message="",
-        dependent_ids_to_wake=[impl.id],
-        failed_targets_to_wake=[],
+        effects_plan=TaskUpdateEffectsPlan(
+            dependent_ids_to_wake=[impl.id],
+            scope_propagation=TaskScopePropagationPlan(
+                target_ids=[impl.id],
+                runtime_handoff=setup.metadata["runtime_handoff"],
+            ),
+        ),
     )
 
     updated_setup = store.get(setup.id)
@@ -1458,10 +1470,18 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
         ),
         task=task,
         caller="qa1",
-        wake_owner=False,
         message="",
-        dependent_ids_to_wake=[],
-        failed_targets_to_wake=[impl.id],
+        effects_plan=TaskUpdateEffectsPlan(
+            send_failure_notice=True,
+            failed_targets_to_wake=[impl.id],
+            triage_followup=TaskTriageFollowupPlan(
+                source_status=TaskStatus.failed.value,
+                next_owner="leader",
+                next_action="triage owner",
+                root_cause="ownership unclear",
+                evidence="cross-cutting regression",
+            ),
+        ),
     )
 
     assert effects.wake is None
@@ -1976,10 +1996,14 @@ def test_execute_task_update_effects_propagates_runtime_handoff_to_dependents(mo
         ),
         task=setup,
         caller="config1",
-        wake_owner=False,
         message="",
-        dependent_ids_to_wake=[impl.id],
-        failed_targets_to_wake=[],
+        effects_plan=TaskUpdateEffectsPlan(
+            dependent_ids_to_wake=[impl.id],
+            scope_propagation=TaskScopePropagationPlan(
+                target_ids=[impl.id],
+                runtime_handoff=setup.metadata["runtime_handoff"],
+            ),
+        ),
     )
 
     updated_setup = store.get(setup.id)
@@ -2101,10 +2125,16 @@ def test_execute_task_update_effects_enriches_shared_contract_from_runtime_hando
         ),
         task=setup,
         caller="config1",
-        wake_owner=False,
         message="",
-        dependent_ids_to_wake=[impl.id],
-        failed_targets_to_wake=[],
+        effects_plan=TaskUpdateEffectsPlan(
+            dependent_ids_to_wake=[impl.id],
+            scope_propagation=TaskScopePropagationPlan(
+                target_ids=[impl.id],
+                runtime_handoff=setup.metadata["runtime_handoff"],
+                feature_scope=setup.metadata["feature_scope"],
+                lane_authority=setup.metadata["lane_authority"],
+            ),
+        ),
     )
 
     updated_impl = store.get(impl.id)
@@ -3340,7 +3370,11 @@ Deliver the backend API update and the member list UI update.
     ]
     assert tasks["Prepare repo, branch, env, and runnable baseline"].metadata["feature_scope"]["execution_shape"] == "full-stack"
     assert "## Resolved Scope Context" in tasks["Prepare repo, branch, env, and runnable baseline"].description
+    assert result.effects_plan is not None
+    assert result.effects_plan.dependent_ids_to_wake == [tasks["Prepare repo, branch, env, and runnable baseline"].id]
+    assert result.effects_plan.scope_propagation is not None
     assert result.effects.deferred_materialization["status"] == "materialized"
+    assert result.effects_plan.deferred_materialization["status"] == "materialized"
     assert result.effects.deferred_materialization["execution_shape"] == "full-stack"
     assert result.effects.deferred_materialization["lane_materialization"] == "dual_lane"
     assert tasks["Implement assigned change slice A with real validation"].metadata["lane_slice_authority"]["lane"] == "backend"
