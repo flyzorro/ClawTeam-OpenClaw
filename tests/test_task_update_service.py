@@ -21,6 +21,7 @@ from clawteam.services.task_update_service import (
     TaskScopePropagationPlan,
     TaskTriageFollowupPlan,
     TaskUpdateValidationError,
+    _build_task_update_effects_plan,
     _build_dependency_completion_message,
     _effective_runtime_handoff,
     _infer_runtime_handoff_from_setup_sections,
@@ -1506,11 +1507,28 @@ def test_execute_task_update_effects_handles_failure_notice_and_reopen_release(m
             send_failure_notice=True,
             failed_targets_to_wake=[impl.id],
             triage_followup=TaskTriageFollowupPlan(
+                source_task_id=qa.id,
                 source_status=TaskStatus.failed.value,
                 next_owner="leader",
                 next_action="triage owner",
-                root_cause="ownership unclear",
-                evidence="cross-cutting regression",
+                subject=f"Triage complex failure: {qa.subject}",
+                description="\n".join(
+                    [
+                        f"Source task: {qa.subject} ({qa.id})",
+                        f"Current status: {TaskStatus.failed.value}",
+                        "Recommended action: triage owner",
+                        "Root cause: ownership unclear",
+                        "Evidence: cross-cutting regression",
+                        "Goal: decide the correct reroute/recovery path and then reopen or release the right owner.",
+                    ]
+                ),
+                metadata={
+                    "triage_followup": "true",
+                    "triage_source_task_id": qa.id,
+                    "triage_source_status": TaskStatus.failed.value,
+                    "triage_recommended_action": "triage owner",
+                    "triage_recommended_next_owner": "leader",
+                },
             ),
         ),
     )
@@ -1674,6 +1692,69 @@ def test_execute_task_update_effects_does_not_recurse_triage_followups(monkeypat
     assert result.effects.triage_release is None
 
 
+def test_build_task_update_effects_plan_skips_existing_triage_followup_execution(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    source = store.create("Regression QA", owner="qa1")
+
+    class FakeRuntime:
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            return {"taskId": task.id, "owner": task.owner, "message": message, "respawned": False}
+
+    ctx = TaskUpdateContext(
+        store=store,
+        team="demo",
+        runtime=FakeRuntime(),
+        release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+        failure_notifier=lambda *args, **kwargs: None,
+    )
+
+    execute_task_update(
+        task_id=source.id,
+        caller="qa1",
+        ctx=ctx,
+        request=TaskUpdateRequest(
+            status=TaskStatus.failed,
+            owner=None,
+            subject=None,
+            description=None,
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind="complex",
+            failure_note=None,
+            failure_root_cause="ownership unclear",
+            failure_evidence="cross-cutting regression",
+            failure_recommended_next_owner="dev1",
+            failure_recommended_action="fix and re-run qa",
+            execution_id=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.metadata["triage_followup_task_id"]
+
+    effects_plan = _build_task_update_effects_plan(
+        ctx=ctx,
+        task=source_after,
+        caller="qa1",
+        wake_owner=False,
+        dependent_ids_to_wake=[],
+        failed_targets_to_wake=[],
+    )
+
+    assert effects_plan.triage_followup is None
+
+
 def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 
@@ -1731,7 +1812,7 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
 
     monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
 
-    execute_task_update(
+    result = execute_task_update(
         task_id=triage.id,
         caller="leader",
         ctx=TaskUpdateContext(
@@ -1764,6 +1845,11 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
             force=False,
         ),
     )
+
+    assert result.outcome.effects_plan is not None
+    assert result.outcome.effects_plan.triage_resolution is not None
+    assert result.outcome.effects_plan.triage_resolution.reopen_decision["case_name"] == "reopen_task"
+    assert "reopened after triage follow-up" in result.outcome.effects_plan.triage_resolution.wake_message
 
     updated_source = store.get(qa.id)
     assert updated_source is not None
@@ -1805,6 +1891,229 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
     )
 
     assert len(wake_calls) == 1
+
+
+def _prepare_precomputed_triage_resolution(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    source = store.create("Regression QA", owner="qa1")
+    triage = store.create(
+        "Triage complex failure: Regression QA",
+        owner="leader",
+        metadata={
+            "triage_followup": "true",
+            "triage_source_task_id": source.id,
+            "triage_source_status": TaskStatus.failed.value,
+            "triage_resolution_owner": "dev1",
+            "triage_resolution_action": "fix and re-run qa",
+        },
+    )
+    store.update(
+        source.id,
+        status=TaskStatus.failed,
+        caller="qa1",
+        metadata={
+            "failure_kind": "complex",
+            "triage_followup_task_id": triage.id,
+        },
+    )
+    triage = store.update(triage.id, status=TaskStatus.completed, caller="leader")
+    assert triage is not None
+
+    class FakeRuntime:
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            return {"taskId": task.id, "owner": task.owner, "message": message, "respawned": False}
+
+    ctx = TaskUpdateContext(
+        store=store,
+        team="demo",
+        runtime=FakeRuntime(),
+        release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+        failure_notifier=lambda *args, **kwargs: None,
+    )
+
+    effects_plan = _build_task_update_effects_plan(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        wake_owner=False,
+        dependent_ids_to_wake=[],
+        failed_targets_to_wake=[],
+    )
+    assert effects_plan.triage_resolution is not None
+
+    return store, source, triage, ctx, effects_plan
+
+
+def test_execute_task_update_effects_applies_precomputed_triage_resolution_when_source_still_matches(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.pending
+    assert source_after.owner == "dev1"
+    assert source_after.metadata["triage_followup_resolution_id"] == triage.id
+    assert source_after.metadata["triage_followup_resolution_action"] == "fix and re-run qa"
+    assert wake_calls == [[source.id]]
+
+
+def test_execute_task_update_effects_rejects_stale_triage_relationship(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(
+        source.id,
+        metadata={
+            "failure_kind": "complex",
+            "triage_followup_task_id": "other-triage",
+        },
+        caller="qa1",
+    )
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.failed
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
+
+
+def test_execute_task_update_effects_rejects_triage_resolution_status_drift(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(source.id, status=TaskStatus.pending, caller="qa1")
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.pending
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
+
+
+def test_execute_task_update_effects_rejects_triage_resolution_failure_kind_drift(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(
+        source.id,
+        metadata={
+            "failure_kind": "simple",
+            "triage_followup_task_id": triage.id,
+        },
+        caller="qa1",
+    )
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.failed
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
+
+
+def test_execute_task_update_effects_rejects_already_resolved_triage_resolution(monkeypatch, tmp_path):
+    store, source, triage, ctx, effects_plan = _prepare_precomputed_triage_resolution(monkeypatch, tmp_path)
+
+    store.update(
+        source.id,
+        metadata={
+            "failure_kind": "complex",
+            "triage_followup_task_id": triage.id,
+            "triage_followup_resolution_id": triage.id,
+        },
+        caller="qa1",
+    )
+
+    wake_calls: list[list[str]] = []
+
+    def fake_wake(team, target_ids, caller, message_builder, repo, store, runtime, release_notifier):
+        wake_calls.append(target_ids)
+        return [{"taskId": target_ids[0], "owner": store.get(target_ids[0]).owner}]
+
+    monkeypatch.setattr("clawteam.services.task_update_service.wake_tasks_to_pending", fake_wake)
+
+    execute_task_update_effects(
+        ctx=ctx,
+        task=triage,
+        caller="leader",
+        message="",
+        effects_plan=effects_plan,
+    )
+
+    source_after = store.get(source.id)
+    assert source_after is not None
+    assert source_after.status == TaskStatus.failed
+    assert source_after.owner == "qa1"
+    assert "triage_followup_resolution_action" not in source_after.metadata
+    assert wake_calls == []
 
 
 def test_execute_task_update_triage_completion_requires_resolution(monkeypatch, tmp_path):
