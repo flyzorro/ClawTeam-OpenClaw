@@ -21,6 +21,7 @@ from clawteam.services.task_update_service import (
     TaskTriageFollowupPlan,
     TaskUpdateValidationError,
     _build_dependency_completion_message,
+    _effective_runtime_handoff,
     _infer_runtime_handoff_from_setup_sections,
     execute_task_update,
     execute_task_update_effects,
@@ -2016,6 +2017,142 @@ def test_execute_task_update_effects_propagates_runtime_handoff_to_dependents(mo
     ]
     assert "## Setup Runtime Handoff" in updated_impl.description
     assert "Treat this handoff as runtime contract" in updated_impl.description
+
+
+def test_effective_runtime_handoff_inherits_from_shared_contract_when_direct_key_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    repo, detached_head = _init_repo_with_baseline(tmp_path)
+    runtime_handoff = {
+        "detached_worktree": str(repo),
+        "detached_head": detached_head,
+        "venv_path": ".venv",
+        "baseline_commands": ["source .venv/bin/activate && pytest -q -> 336 passed in 2.30s"],
+    }
+    dev = store.create(
+        "Implement fix",
+        owner="dev1",
+        metadata={
+            "message_type": "DEV_RESULT",
+            "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
+            "shared_contract": {
+                "provider_contract": {"runtime_handoff": runtime_handoff},
+                "consumer_contract": {"runtime_handoff": runtime_handoff},
+            },
+        },
+    )
+
+    assert _effective_runtime_handoff(dev) == runtime_handoff
+
+
+def test_execute_task_update_prefers_direct_runtime_handoff_over_shared_contract(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    repo, detached_head = _init_repo_with_baseline(tmp_path)
+    direct_runtime_handoff = {
+        "detached_worktree": str(repo),
+        "detached_head": detached_head,
+    }
+    inherited_runtime_handoff = {
+        "detached_worktree": str(tmp_path / "wrong-repo"),
+        "detached_head": "2222222",
+    }
+    dev = store.create(
+        "Implement fix",
+        owner="dev1",
+        metadata={
+            "message_type": "DEV_RESULT",
+            "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
+            "runtime_handoff": direct_runtime_handoff,
+            "shared_contract": {
+                "provider_contract": {"runtime_handoff": inherited_runtime_handoff},
+                "consumer_contract": {"runtime_handoff": inherited_runtime_handoff},
+            },
+        },
+    )
+    qa = store.create("Validate change", owner="qa1", blocked_by=[dev.id])
+    (repo / "app.py").write_text("print('changed again')\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "clawteam.services.task_update_service.wake_tasks_to_pending",
+        lambda *args, **kwargs: [],
+    )
+
+    result = execute_task_update(
+        task_id=dev.id,
+        caller="dev1",
+        ctx=TaskUpdateContext(
+            store=store,
+            team="demo",
+            runtime=RuntimeOrchestrator(team="demo"),
+            release_notifier=lambda team, task, caller, message: None,
+            failure_notifier=lambda team, task, caller: None,
+        ),
+        request=TaskUpdateRequest(
+            status=TaskStatus.completed,
+            owner=None,
+            subject=None,
+            description="""DEV_RESULT
+status: completed
+summary:
+- implemented change
+changed_files:
+- app.py
+validation:
+- pytest -q -> passed
+known_issues:
+- none
+next_action: handoff to QA""",
+            add_blocks=None,
+            add_blocked_by=None,
+            add_on_fail=None,
+            failure_kind=None,
+            failure_note=None,
+            failure_root_cause=None,
+            failure_evidence=None,
+            failure_recommended_next_owner=None,
+            failure_recommended_action=None,
+            execution_id=None,
+            wake_owner=False,
+            message="",
+            force=False,
+        ),
+    )
+
+    assert result.effects_plan is not None
+    assert result.effects_plan.scope_propagation is not None
+    assert result.effects_plan.scope_propagation.runtime_handoff == direct_runtime_handoff
+    updated_qa = store.get(qa.id)
+    assert updated_qa is not None
+    assert updated_qa.metadata["runtime_handoff"] == direct_runtime_handoff
+
+
+def test_effective_runtime_handoff_returns_none_without_direct_or_shared_contract(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "dev1", "dev1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    dev = store.create(
+        "Implement fix",
+        owner="dev1",
+        metadata={
+            "message_type": "DEV_RESULT",
+            "required_sections": ["status", "summary", "changed_files", "validation", "known_issues", "next_action"],
+        },
+    )
+
+    assert _effective_runtime_handoff(dev) is None
 
 
 def test_execute_task_update_effects_enriches_shared_contract_from_runtime_handoff(monkeypatch, tmp_path):
