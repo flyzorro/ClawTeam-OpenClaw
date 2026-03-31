@@ -1561,6 +1561,73 @@ def test_execute_task_update_effects_fails_closed_without_triage_materialization
     assert notices == []
 
 
+def test_execute_task_update_effects_fails_closed_when_triage_release_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    notices: list[dict[str, str]] = []
+
+    def fake_notifier(team, task, caller):
+        notices.append({
+            "team": team,
+            "task": task.id,
+            "caller": caller,
+        })
+        return {"failureNotice": "sent"}
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "qa1", "qa1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    qa = store.create("Regression QA", owner="qa1")
+    task = store.update(
+        qa.id,
+        status=TaskStatus.failed,
+        caller="qa1",
+        metadata={
+            "failure_kind": "complex",
+            "failure_root_cause": "ownership unclear",
+            "failure_evidence": "cross-cutting regression",
+            "failure_recommended_next_owner": "leader",
+            "failure_recommended_action": "triage owner",
+        },
+    )
+
+    class FakeRuntime:
+        def release_to_owner(self, task, *, caller, message, respawn, release_notifier):
+            raise RuntimeError("release blew up")
+
+    with pytest.raises(RuntimeError, match="triage materialization failed: triage_release_failed"):
+        execute_task_update_effects(
+            ctx=TaskUpdateContext(
+                store=store,
+                team="demo",
+                runtime=FakeRuntime(),
+                release_notifier=lambda team, task, caller, message: {"messageSent": True, "message": message},
+                failure_notifier=fake_notifier,
+            ),
+            task=task,
+            caller="qa1",
+            message="",
+            effects_plan=TaskUpdateEffectsPlan(
+                send_failure_notice=True,
+                failed_targets_to_wake=[],
+                triage_followup=TaskTriageFollowupPlan(
+                    source_status=TaskStatus.failed.value,
+                    next_owner="leader",
+                    next_action="triage owner",
+                    root_cause="ownership unclear",
+                    evidence="cross-cutting regression",
+                ),
+            ),
+        )
+
+    updated = store.get(task.id)
+    assert updated is not None
+    assert updated.metadata.get("triage_materialization_state") == "release_failed"
+    assert "release blew up" in str(updated.metadata.get("triage_materialization_error"))
+    assert notices == []
+
+
 def test_execute_task_update_effects_auto_creates_blocked_triage_followup(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
 

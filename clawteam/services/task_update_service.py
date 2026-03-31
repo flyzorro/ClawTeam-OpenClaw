@@ -1577,14 +1577,19 @@ def execute_task_update_effects(
             )
             raise RuntimeError("triage materialization failed: triage_task_missing")
 
+    release_failed = isinstance(triage_release, dict) and triage_release.get("releaseError")
+
     if triage_task is not None:
         metadata = dict(task.metadata or {})
         metadata["triage_materialization_state"] = "created"
         metadata["triage_materialization_task_id"] = triage_task.id
-        if isinstance(triage_release, dict) and triage_release.get("releaseError"):
+        if release_failed:
             metadata["triage_materialization_state"] = "release_failed"
             metadata["triage_materialization_error"] = str(triage_release.get("releaseError"))
         ctx.store.update(task.id, metadata=metadata, caller=caller)
+
+    if triage_required and triage_existing_id is None and release_failed:
+        raise RuntimeError("triage materialization failed: triage_release_failed")
 
     if effects_plan.triage_resolution is not None:
         _apply_triage_followup_resolution(
