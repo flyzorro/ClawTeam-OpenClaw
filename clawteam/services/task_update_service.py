@@ -483,8 +483,27 @@ def _validate_review_completion(existing: TaskItem, request: TaskUpdateRequest, 
             raise TaskTransitionValidationError("REVIEW_RESULT completion requires completed QA dependencies with persisted QA_RESULT metadata")
 
 
+def _validate_triage_followup_completion(existing: TaskItem, request: TaskUpdateRequest) -> None:
+    if request.status != TaskStatus.completed:
+        return
+    metadata = existing.metadata or {}
+    if metadata.get("triage_followup") != "true":
+        return
+
+    resolution_owner = str(request.triage_resolution_owner or metadata.get("triage_resolution_owner") or "").strip()
+    resolution_action = str(request.triage_resolution_action or metadata.get("triage_resolution_action") or "").strip()
+    if not resolution_owner or not resolution_action:
+        raise TaskTransitionValidationError(
+            "triage follow-up completion requires --triage-resolution-owner and --triage-resolution-action"
+        )
+
+
 def validate_completion(existing: TaskItem, request: TaskUpdateRequest, *, all_tasks: list[TaskItem]) -> None:
     metadata = existing.metadata or {}
+    if metadata.get("triage_followup") == "true":
+        _validate_triage_followup_completion(existing, request)
+        return
+
     message_type = str(metadata.get("message_type") or "").strip().upper()
     if message_type == "SETUP_RESULT":
         _validate_setup_completion(existing, request)
@@ -868,6 +887,8 @@ def _plan_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> TaskTriageF
             f"Note: {note}" if note else "",
             repair_packet or "",
             "Goal: decide the correct reroute/recovery path and then reopen or release the right owner.",
+            "Completion contract: when marking this triage task completed, you must provide both --triage-resolution-owner and --triage-resolution-action.",
+            "Free-form completion without those fields is rejected fail-closed.",
         ]
         if line
     )

@@ -149,6 +149,8 @@ def build_agent_prompt(
         "- DEV_RESULT must include exactly these headings: status, summary, changed_files, validation, known_issues, next_action.",
         "- QA_RESULT must include exactly these headings: status, summary, evidence, validation, risk, next_action.",
         "- REVIEW_RESULT must include exactly these headings: decision, summary, architecture_review, required_fixes, evidence, validation, next_action.",
+        "- For triage follow-up tasks (`triage_followup=true`), completion is fail-closed: `clawteam task update ... --status completed` must include both `--triage-resolution-owner <owner>` and `--triage-resolution-action <action>`.",
+        "- Triage follow-up tasks are not complete with free-form prose alone; they must write back the concrete next owner and next action.",
         "- Keep required_fixes limited to must-fix items; put nice-to-have ideas outside that section or write `none`.",
         "",
         "## Coordination Protocol\n",
