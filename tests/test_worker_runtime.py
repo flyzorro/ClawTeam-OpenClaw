@@ -1320,6 +1320,81 @@ def test_run_worker_iteration_uses_transcript_only_when_completion_envelope_is_u
 
 
 
+def test_run_worker_iteration_recovers_review_result_and_persists_description(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "review1")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "review1-id")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    TeamManager.add_member("demo", "qa2", "qa2-id")
+    TeamManager.add_member("demo", "review1", "review1-id")
+
+    mailbox = MailboxManager("demo")
+    store = TaskStore("demo")
+    qa1 = store.create(
+        subject="Run scoped QA pass A on the real change",
+        description="QA A",
+        owner="qa1",
+        metadata={"template_stage": "qa", "message_type": "QA_RESULT", "qa_result_status": "pass_with_risk"},
+    )
+    qa2 = store.create(
+        subject="Run scoped QA pass B on the real change",
+        description="QA B",
+        owner="qa2",
+        metadata={"template_stage": "qa", "message_type": "QA_RESULT", "qa_result_status": "pass_with_risk"},
+    )
+    qa1.status = TaskStatus.completed
+    qa2.status = TaskStatus.completed
+    store._save_unlocked(qa1)
+    store._save_unlocked(qa2)
+
+    review = store.create(
+        subject="Review code quality, maintainability, and release readiness",
+        description="Review pending",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "required_sections": ["decision", "summary", "architecture_review", "required_fixes", "evidence", "validation", "next_action"],
+        },
+    )
+    qa1.blocks.append(review.id)
+    qa2.blocks.append(review.id)
+    store._save_unlocked(qa1)
+    store._save_unlocked(qa2)
+    store._save_unlocked(review)
+    mailbox.send("leader", "review1", "start now", key=f"task-wake:{review.id}", last_task=review.id)
+
+    transcript_dir = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    (transcript_dir / "clawteam-demo-review1.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","content":"REVIEW_RESULT\ndecision: approve\nsummary: reviewed the change\narchitecture_review:\n- runtime recovery path inspected\nrequired_fixes:\n- none\nevidence:\n- clawteam/worker_runtime.py recovery path inspected\nvalidation:\n- pytest -q tests/test_worker_runtime.py\nnext_action: move to deliver"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(worker_runtime, "_run_agent_with_progress_watchdog", lambda *args, **kwargs: _Completed(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(
+        worker_runtime,
+        "_wait_for_post_exit_settle",
+        lambda **kwargs: (TaskStore("demo").get(review.id), False),
+    )
+
+    result = run_worker_iteration(team_name="demo", agent_name="review1", base_command=["openclaw"])
+
+    assert result["status"] == "recovered_terminal"
+    assert result["taskId"] == review.id
+    assert result["recoveredFrom"] == "REVIEW_RESULT"
+    assert result["recoverySource"] == "transcript_result_block_temporary_compatibility"
+
+    updated = TaskStore("demo").get(review.id)
+    assert updated is not None
+    assert updated.status.value == "completed"
+    assert updated.description.startswith("REVIEW_RESULT\n")
+    assert "decision: approve" in updated.description
+    assert updated.metadata["review_decision"] == "approve"
+    assert updated.metadata["review_summary"] == "reviewed the change"
+
+
 def test_run_worker_iteration_recovers_qa_blocked_result_block_as_blocked(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")

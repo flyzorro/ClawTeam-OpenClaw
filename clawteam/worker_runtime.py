@@ -110,6 +110,7 @@ class TerminalIntent:
     metadata: dict[str, Any] | None = None
     session_key: str | None = None
     result_type: str = ""
+    result_description: str | None = None
     authoritative: bool = False
     fallback_case_name: str = "worker_runtime_terminal_intent"
 
@@ -562,6 +563,74 @@ def _extract_structured_result_sections(transcript_tail: str, block_name: str) -
     return sections or None
 
 
+_RESULT_SECTION_ORDER: dict[str, tuple[str, ...]] = {
+    "SETUP_RESULT": (
+        "status",
+        "remote_status",
+        "remote_head",
+        "detached_worktree",
+        "detached_head",
+        "install",
+        "baseline_validation",
+        "known_limitations",
+        "next_action",
+    ),
+    "DEV_RESULT": (
+        "status",
+        "summary",
+        "changed_files",
+        "validation",
+        "known_issues",
+        "next_action",
+    ),
+    "QA_RESULT": (
+        "status",
+        "summary",
+        "evidence",
+        "validation",
+        "risk",
+        "next_action",
+    ),
+    "REVIEW_RESULT": (
+        "decision",
+        "summary",
+        "architecture_review",
+        "required_fixes",
+        "evidence",
+        "validation",
+        "next_action",
+    ),
+}
+
+
+def _render_structured_result_description(block_name: str, sections: dict[str, Any] | None) -> str | None:
+    if not isinstance(sections, dict) or not sections:
+        return None
+    ordered_keys = _RESULT_SECTION_ORDER.get(block_name.upper())
+    if not ordered_keys:
+        ordered_keys = tuple(str(key).strip().lower() for key in sections.keys() if str(key).strip())
+    lines = [block_name]
+    seen: set[str] = set()
+    for key in ordered_keys:
+        raw_value = sections.get(key)
+        if raw_value is None:
+            continue
+        value = _normalize_result_text(str(raw_value))
+        if not value:
+            continue
+        lines.append(f"{key}: {value}")
+        seen.add(key)
+    for key, raw_value in sections.items():
+        normalized_key = str(key).strip().lower()
+        if not normalized_key or normalized_key in seen or raw_value is None:
+            continue
+        value = _normalize_result_text(str(raw_value))
+        if not value:
+            continue
+        lines.append(f"{normalized_key}: {value}")
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
 def _infer_terminal_status_from_transcript_tail(transcript_tail: str) -> tuple[TaskStatus, str, str] | None:
     normalized = "\n".join(
         part for part in (_extract_text_from_transcript_line(line) for line in transcript_tail.splitlines()) if part
@@ -892,7 +961,7 @@ def apply_terminal_intent(
                     status=TaskStatus.completed,
                     owner=None,
                     subject=None,
-                    description=None,
+                    description=intent.result_description,
                     add_blocks=None,
                     add_blocked_by=None,
                     add_on_fail=None,
@@ -924,6 +993,7 @@ def apply_terminal_intent(
         execution_id=intent.execution_id,
         metadata=dict(intent.metadata or {}),
         fallback_case_name=intent.fallback_case_name,
+        description=intent.result_description,
     )
     current_task = apply_result.task if apply_result is not None else task
     if decision and not decision.accepted:
@@ -1233,6 +1303,13 @@ def run_worker_iteration(
                 if fallback_mode:
                     recovery_metadata["runtime_terminal_recovery_compatibility_fallback"] = "true"
                 structured_sections = _extract_structured_result_sections(transcript_tail, result_type)
+                if structured_sections is None and signal_payload is not None and isinstance(signal_payload.result_payload, dict):
+                    structured_sections = {
+                        str(key).strip().lower(): _normalize_result_text(str(value))
+                        for key, value in signal_payload.result_payload.items()
+                        if str(key).strip() and value is not None and _normalize_result_text(str(value))
+                    } or None
+                recovered_description = _render_structured_result_description(result_type, structured_sections)
                 if structured_sections:
                     normalized_result_type = result_type.lower()
                     recovery_metadata[f"{normalized_result_type}_sections"] = structured_sections
@@ -1241,6 +1318,10 @@ def run_worker_iteration(
                         recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
                         recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
                         recovery_metadata["qa_result_summary"] = structured_sections.get("summary", "")
+                    elif result_type == "REVIEW_RESULT":
+                        recovery_metadata["review_result"] = structured_sections
+                        recovery_metadata["review_decision"] = structured_sections.get("decision", terminal_status_value)
+                        recovery_metadata["review_summary"] = structured_sections.get("summary", "")
                 if (
                     recovery_source == COMPLETION_SIGNAL_TEMPORARY_FALLBACK_SOURCE
                     and result_type == "QA_RESULT"
@@ -1278,6 +1359,7 @@ def run_worker_iteration(
                             metadata=recovery_metadata,
                             session_key=session_key,
                             result_type=result_type,
+                            result_description=recovered_description,
                             authoritative=recovery_source == COMPLETION_SIGNAL_PRIMARY_SOURCE,
                             fallback_case_name="worker_runtime_transcript_terminal_recovery",
                         ),
