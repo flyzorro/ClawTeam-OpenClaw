@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Callable
@@ -532,6 +532,48 @@ class TaskUpdateEffects:
 
 
 @dataclass(frozen=True)
+class TaskScopePropagationPlan:
+    target_ids: list[str] = field(default_factory=list)
+    scope_payload: dict[str, Any] | None = None
+    scope_warnings: list[dict[str, Any]] | None = None
+    feature_scope: dict[str, Any] | None = None
+    lane_authority: dict[str, dict[str, Any]] | None = None
+    runtime_handoff: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class TaskTriageFollowupPlan:
+    source_status: str
+    next_owner: str
+    next_action: str
+    root_cause: str
+    evidence: str
+    note: str | None = None
+    existing_followup_id: str | None = None
+    repair_packet: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskTriageResolutionPlan:
+    source_task_id: str
+    source_status: str
+    next_owner: str
+    next_action: str
+
+
+@dataclass(frozen=True)
+class TaskUpdateEffectsPlan:
+    wake_owner: bool = False
+    send_failure_notice: bool = False
+    dependent_ids_to_wake: list[str] = field(default_factory=list)
+    failed_targets_to_wake: list[str] = field(default_factory=list)
+    scope_propagation: TaskScopePropagationPlan | None = None
+    deferred_materialization: dict[str, Any] | None = None
+    triage_followup: TaskTriageFollowupPlan | None = None
+    triage_resolution: TaskTriageResolutionPlan | None = None
+
+
+@dataclass(frozen=True)
 class FailureRepairPacket:
     target_files: list[str] | None = None
     repro_steps: str | None = None
@@ -585,6 +627,7 @@ class TaskUpdateResult:
     effects: TaskUpdateEffects
     transition_case: str | None = None
     apply_result: TransitionApplyResult | None = None
+    effects_plan: TaskUpdateEffectsPlan | None = None
 
     def __post_init__(self) -> None:
         if self.transition_case is None and self.apply_result is not None:
@@ -717,6 +760,32 @@ def _propagate_resolved_scope_to_targets(
         )
 
 
+def _plan_scope_propagation(
+    *,
+    task: TaskItem,
+    dependent_ids_to_wake: list[str],
+) -> TaskScopePropagationPlan | None:
+    if not dependent_ids_to_wake:
+        return None
+
+    scope_payload = _scope_payload(task)
+    scope_warnings = task.metadata.get("scope_audit_warnings") if isinstance(task.metadata, dict) else None
+    feature_scope = task.metadata.get("feature_scope") if isinstance(task.metadata, dict) else None
+    lane_authority = task.metadata.get("lane_authority") if isinstance(task.metadata, dict) else None
+    runtime_handoff = _runtime_handoff_payload(task)
+    if not scope_payload and not runtime_handoff:
+        return None
+
+    return TaskScopePropagationPlan(
+        target_ids=list(dependent_ids_to_wake),
+        scope_payload=scope_payload,
+        scope_warnings=scope_warnings if isinstance(scope_warnings, list) else None,
+        feature_scope=feature_scope if isinstance(feature_scope, dict) else None,
+        lane_authority=lane_authority if isinstance(lane_authority, dict) else None,
+        runtime_handoff=runtime_handoff,
+    )
+
+
 def _build_failure_reopen_message(failed_task: TaskItem, target: TaskItem) -> str:
     repair_packet = _build_failure_repair_packet(failed_task)
     parts = [
@@ -727,15 +796,15 @@ def _build_failure_reopen_message(failed_task: TaskItem, target: TaskItem) -> st
     return "\n".join(parts)
 
 
-def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[TaskItem, str, bool] | tuple[None, None, bool]:
+def _plan_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> TaskTriageFollowupPlan | None:
     metadata = task.metadata if isinstance(task.metadata, dict) else {}
     if metadata.get("triage_followup") == "true":
-        return None, None, False
+        return None
 
     is_complex_failure = task.status == TaskStatus.failed and metadata.get("failure_kind") == "complex"
     is_blocked = task.status == TaskStatus.blocked
     if not is_complex_failure and not is_blocked:
-        return None, None, False
+        return None
 
     owner_key = "failure_recommended_next_owner" if is_complex_failure else "blocked_recommended_next_owner"
     action_key = "failure_recommended_action" if is_complex_failure else "blocked_recommended_action"
@@ -748,35 +817,55 @@ def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[Task
     next_owner = str(metadata.get(owner_key) or "").strip()
     next_action = str(metadata.get(action_key) or "").strip()
     if not next_owner or not next_action:
-        return None, None, False
+        return None
     if TeamManager.get_member(ctx.team, next_owner) is None:
         fallback_leader = TeamManager.get_leader_name(ctx.team) or "leader"
         next_owner = fallback_leader
 
     existing_followup_id = str(metadata.get("triage_followup_task_id") or "").strip()
-    if existing_followup_id:
-        existing_followup = ctx.store.get(existing_followup_id)
-        if existing_followup is not None:
-            return existing_followup, next_owner, False
 
     root_cause = str(metadata.get(root_key) or "").strip() or "Unspecified"
     evidence = str(metadata.get(evidence_key) or "").strip() or "No evidence provided."
     note = str(metadata.get(note_key) or "").strip()
     repair_packet = _build_failure_repair_packet(task)
-    kind_label = "complex failure" if is_complex_failure else "blocked task"
+    return TaskTriageFollowupPlan(
+        source_status=task.status.value,
+        next_owner=next_owner,
+        next_action=next_action,
+        root_cause=root_cause,
+        evidence=evidence,
+        note=note or None,
+        existing_followup_id=existing_followup_id or None,
+        repair_packet=repair_packet,
+    )
+
+
+def _build_triage_followup(
+    *,
+    task: TaskItem,
+    ctx: TaskUpdateContext,
+    plan: TaskTriageFollowupPlan,
+) -> tuple[TaskItem, str, bool]:
+    if plan.existing_followup_id:
+        existing_followup = ctx.store.get(plan.existing_followup_id)
+        if existing_followup is not None:
+            return existing_followup, plan.next_owner, False
+
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    kind_label = "complex failure" if plan.source_status == TaskStatus.failed.value else "blocked task"
     triage = ctx.store.create(
         subject=f"Triage {kind_label}: {task.subject}",
-        owner=next_owner,
+        owner=plan.next_owner,
         description="\n".join(
             line
             for line in [
                 f"Source task: {task.subject} ({task.id})",
-                f"Current status: {task.status.value}",
-                f"Recommended action: {next_action}",
-                f"Root cause: {root_cause}",
-                f"Evidence: {evidence}",
-                f"Note: {note}" if note else "",
-                repair_packet or "",
+                f"Current status: {plan.source_status}",
+                f"Recommended action: {plan.next_action}",
+                f"Root cause: {plan.root_cause}",
+                f"Evidence: {plan.evidence}",
+                f"Note: {plan.note}" if plan.note else "",
+                plan.repair_packet or "",
                 "Goal: decide the correct reroute/recovery path and then reopen or release the right owner.",
             ]
             if line
@@ -784,15 +873,15 @@ def _build_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> tuple[Task
         metadata={
             "triage_followup": "true",
             "triage_source_task_id": task.id,
-            "triage_source_status": task.status.value,
-            "triage_recommended_action": next_action,
-            "triage_recommended_next_owner": next_owner,
+            "triage_source_status": plan.source_status,
+            "triage_recommended_action": plan.next_action,
+            "triage_recommended_next_owner": plan.next_owner,
         },
     )
     patched_metadata = dict(metadata)
     patched_metadata["triage_followup_task_id"] = triage.id
     ctx.store.update(task.id, metadata=patched_metadata)
-    return triage, next_owner, True
+    return triage, plan.next_owner, True
 
 
 def _build_triage_resolution_message(source: TaskItem, triage: TaskItem, action: str) -> str:
@@ -802,15 +891,14 @@ def _build_triage_resolution_message(source: TaskItem, triage: TaskItem, action:
     )
 
 
-def _apply_triage_followup_resolution(
+def _plan_triage_followup_resolution(
     *,
+    task: TaskItem,
     ctx: TaskUpdateContext,
-    triage: TaskItem,
-    caller: str,
-) -> list[dict[str, Any]] | None:
-    if triage.status != TaskStatus.completed:
+) -> TaskTriageResolutionPlan | None:
+    if task.status != TaskStatus.completed:
         return None
-    metadata = triage.metadata if isinstance(triage.metadata, dict) else {}
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
     if metadata.get("triage_followup") != "true":
         return None
 
@@ -822,10 +910,10 @@ def _apply_triage_followup_resolution(
     if source is None:
         return None
 
-    if str(source.metadata.get("triage_followup_task_id") or "").strip() != triage.id:
+    if str(source.metadata.get("triage_followup_task_id") or "").strip() != task.id:
         return None
 
-    if str(source.metadata.get("triage_followup_resolution_id") or "").strip() == triage.id:
+    if str(source.metadata.get("triage_followup_resolution_id") or "").strip() == task.id:
         return None
 
     source_status = str(metadata.get("triage_source_status") or source.status.value)
@@ -851,6 +939,42 @@ def _apply_triage_followup_resolution(
         fallback_leader = TeamManager.get_leader_name(ctx.team) or "leader"
         next_owner = fallback_leader
 
+    return TaskTriageResolutionPlan(
+        source_task_id=source.id,
+        source_status=source_status,
+        next_owner=next_owner,
+        next_action=next_action,
+    )
+
+
+def _apply_triage_followup_resolution(
+    *,
+    ctx: TaskUpdateContext,
+    triage: TaskItem,
+    caller: str,
+    plan: TaskTriageResolutionPlan,
+) -> list[dict[str, Any]] | None:
+    source = ctx.store.get(plan.source_task_id)
+    if source is None:
+        return None
+
+    if str(source.metadata.get("triage_followup_task_id") or "").strip() != triage.id:
+        return None
+
+    if str(source.metadata.get("triage_followup_resolution_id") or "").strip() == triage.id:
+        return None
+
+    if plan.source_status == TaskStatus.blocked.value:
+        if source.status != TaskStatus.blocked:
+            return None
+    elif plan.source_status == TaskStatus.failed.value:
+        if source.status != TaskStatus.failed:
+            return None
+        if str(source.metadata.get("failure_kind") or "").strip() != "complex":
+            return None
+    else:
+        return None
+
     reopen_decision = plan_reopen_task(existing=source, event=ReopenTaskEvent(caller=caller))
     if not reopen_decision.accepted:
         return None
@@ -870,16 +994,16 @@ def _apply_triage_followup_resolution(
         "triage_followup_resolution_id": triage.id,
         "triage_followup_resolved_at": datetime.now().astimezone().isoformat(),
         "triage_followup_resolved_by": triage.owner or caller,
-        "triage_followup_resolution_owner": next_owner,
-        "triage_followup_resolution_action": next_action,
-        "triage_followup_resolution_source_status": source_status,
+        "triage_followup_resolution_owner": plan.next_owner,
+        "triage_followup_resolution_action": plan.next_action,
+        "triage_followup_resolution_source_status": plan.source_status,
     }
 
     updated = _apply_generic_patch(
         ctx=ctx,
         task_id=source.id,
         patch=TaskPatch(
-            owner=next_owner,
+            owner=plan.next_owner,
             metadata=resolution_metadata,
         ),
         caller=caller,
@@ -892,7 +1016,7 @@ def _apply_triage_followup_resolution(
         ctx.team,
         [updated.id],
         caller=caller,
-        message_builder=lambda target: _build_triage_resolution_message(target, triage, next_action),
+        message_builder=lambda target: _build_triage_resolution_message(target, triage, plan.next_action),
         repo=ctx.repo,
         store=ctx.store,
         runtime=ctx.runtime,
@@ -1253,17 +1377,11 @@ def _materialize_post_scope_tasks(*, store: TaskStore, scope_task: TaskItem) -> 
 
 def _resolve_deferred_materialization(
     *,
-    task: TaskItem,
+    is_post_scope_completion: bool,
+    deferred_materialization_state: str | None,
     deferred_materialization: dict[str, Any] | None,
     dependent_ids_to_wake: list[str],
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    metadata = task.metadata if isinstance(task.metadata, dict) else None
-    is_post_scope_completion = (
-        metadata is not None
-        and task.status == TaskStatus.completed
-        and str(metadata.get("template_stage") or "").strip().lower() == "scope"
-        and str(metadata.get("materialization_mode") or "immediate").strip().lower() == POST_SCOPE_MATERIALIZATION_MODE
-    )
     if not is_post_scope_completion and deferred_materialization is None:
         return None, dependent_ids_to_wake
 
@@ -1273,7 +1391,7 @@ def _resolve_deferred_materialization(
     effect["hook"] = str(effect.get("hook") or DEFERRED_MATERIALIZATION_HOOK)
     effect["state"] = str(
         effect.get("state")
-        or (metadata or {}).get("deferred_materialization_state")
+        or deferred_materialization_state
         or DEFERRED_MATERIALIZATION_AWAITING_HOOK
     )
     effect["status"] = str(effect.get("status") or "fail_closed")
@@ -1285,42 +1403,101 @@ def _resolve_deferred_materialization(
         return effect, []
     return effect, dependent_ids_to_wake
 
+
+def _build_task_update_effects_plan(
+    *,
+    ctx: TaskUpdateContext,
+    task: TaskItem,
+    wake_owner: bool,
+    dependent_ids_to_wake: list[str],
+    failed_targets_to_wake: list[str],
+    deferred_materialization: dict[str, Any] | None = None,
+) -> TaskUpdateEffectsPlan:
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    is_post_scope_completion = (
+        task.status == TaskStatus.completed
+        and str(metadata.get("template_stage") or "").strip().lower() == "scope"
+        and str(metadata.get("materialization_mode") or "immediate").strip().lower() == POST_SCOPE_MATERIALIZATION_MODE
+    )
+    deferred_materialization, dependent_ids_to_wake = _resolve_deferred_materialization(
+        is_post_scope_completion=is_post_scope_completion,
+        deferred_materialization_state=str(metadata.get("deferred_materialization_state") or "").strip() or None,
+        deferred_materialization=deferred_materialization,
+        dependent_ids_to_wake=dependent_ids_to_wake,
+    )
+
+    return TaskUpdateEffectsPlan(
+        wake_owner=bool(wake_owner and task.status == TaskStatus.pending and task.owner),
+        send_failure_notice=task.status == TaskStatus.failed,
+        dependent_ids_to_wake=list(dependent_ids_to_wake),
+        failed_targets_to_wake=list(failed_targets_to_wake),
+        scope_propagation=_plan_scope_propagation(task=task, dependent_ids_to_wake=dependent_ids_to_wake),
+        deferred_materialization=deferred_materialization,
+        triage_followup=_plan_triage_followup(task, ctx),
+        triage_resolution=_plan_triage_followup_resolution(task=task, ctx=ctx),
+    )
+
+
+def _needs_triage_materialization(task: TaskItem) -> tuple[bool, str | None, str | None]:
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    if metadata.get("triage_followup") == "true":
+        return False, None, None
+
+    is_complex_failure = task.status == TaskStatus.failed and metadata.get("failure_kind") == "complex"
+    is_blocked = task.status == TaskStatus.blocked
+    if not is_complex_failure and not is_blocked:
+        return False, None, None
+
+    owner_key = "failure_recommended_next_owner" if is_complex_failure else "blocked_recommended_next_owner"
+    action_key = "failure_recommended_action" if is_complex_failure else "blocked_recommended_action"
+
+    next_owner = str(metadata.get(owner_key) or "").strip()
+    next_action = str(metadata.get(action_key) or "").strip()
+    if not next_owner or not next_action:
+        return False, None, None
+
+    existing_followup_id = str(metadata.get("triage_followup_task_id") or "").strip()
+    if existing_followup_id:
+        return False, existing_followup_id, None
+
+    return True, None, "complex" if is_complex_failure else "blocked"
+
+
+def _record_triage_materialization_failure(
+    *,
+    ctx: TaskUpdateContext,
+    task: TaskItem,
+    caller: str,
+    reason: str,
+) -> None:
+    metadata = dict(task.metadata or {})
+    metadata["triage_materialization_state"] = "failed"
+    metadata["triage_materialization_error"] = reason
+    ctx.store.update(task.id, metadata=metadata, caller=caller)
+
+
 def execute_task_update_effects(
     *,
     ctx: TaskUpdateContext,
     task: TaskItem,
     caller: str,
-    wake_owner: bool,
     message: str,
-    dependent_ids_to_wake: list[str],
-    failed_targets_to_wake: list[str],
-    deferred_materialization: dict[str, Any] | None = None,
+    effects_plan: TaskUpdateEffectsPlan,
 ) -> TaskUpdateEffects:
     """Execute post-update side effects after the task store mutation succeeds."""
-    deferred_materialization, dependent_ids_to_wake = _resolve_deferred_materialization(
-        task=task,
-        deferred_materialization=deferred_materialization,
-        dependent_ids_to_wake=dependent_ids_to_wake,
-    )
-
-    scope_payload = _scope_payload(task)
-    scope_warnings = task.metadata.get("scope_audit_warnings") if isinstance(task.metadata, dict) else None
-    feature_scope = task.metadata.get("feature_scope") if isinstance(task.metadata, dict) else None
-    lane_authority = task.metadata.get("lane_authority") if isinstance(task.metadata, dict) else None
-    runtime_handoff = _runtime_handoff_payload(task)
-    if dependent_ids_to_wake and (scope_payload or runtime_handoff):
+    if effects_plan.scope_propagation is not None:
         _propagate_resolved_scope_to_targets(
             store=ctx.store,
-            target_ids=dependent_ids_to_wake,
-            scope_payload=scope_payload or {},
-            scope_warnings=scope_warnings if isinstance(scope_warnings, list) else None,
-            runtime_handoff=runtime_handoff,
-            feature_scope=feature_scope if isinstance(feature_scope, dict) else None,
-            lane_authority=lane_authority if isinstance(lane_authority, dict) else None,
+            target_ids=effects_plan.scope_propagation.target_ids,
+            scope_payload=effects_plan.scope_propagation.scope_payload or {},
+            scope_warnings=effects_plan.scope_propagation.scope_warnings,
+            runtime_handoff=effects_plan.scope_propagation.runtime_handoff,
+            feature_scope=effects_plan.scope_propagation.feature_scope,
+            lane_authority=effects_plan.scope_propagation.lane_authority,
         )
 
     wake = None
-    if wake_owner and task.status == TaskStatus.pending and task.owner:
+    if effects_plan.wake_owner:
         wake = ctx.runtime.release_to_owner(
             task,
             caller=caller,
@@ -1330,11 +1507,11 @@ def execute_task_update_effects(
         )
 
     auto_releases: list[dict[str, Any]] = []
-    if dependent_ids_to_wake:
+    if effects_plan.dependent_ids_to_wake:
         auto_releases.extend(
             wake_tasks_to_pending(
                 ctx.release_team,
-                dependent_ids_to_wake,
+                effects_plan.dependent_ids_to_wake,
                 caller=caller,
                 message_builder=lambda target: _build_dependency_completion_message(task, target),
                 repo=ctx.release_repo,
@@ -1343,11 +1520,11 @@ def execute_task_update_effects(
                 release_notifier=ctx.release_notifier,
             )
         )
-    if failed_targets_to_wake:
+    if effects_plan.failed_targets_to_wake:
         auto_releases.extend(
             wake_tasks_to_pending(
                 ctx.team,
-                failed_targets_to_wake,
+                effects_plan.failed_targets_to_wake,
                 caller=caller,
                 message_builder=lambda target: _build_failure_reopen_message(task, target),
                 repo=ctx.repo,
@@ -1358,7 +1535,15 @@ def execute_task_update_effects(
         )
 
     triage_release = None
-    triage_task, _triage_owner, triage_created = _build_triage_followup(task, ctx)
+    triage_task: TaskItem | None = None
+    triage_created = False
+    triage_required, triage_existing_id, triage_required_kind = _needs_triage_materialization(task)
+    if effects_plan.triage_followup is not None:
+        triage_task, _triage_owner, triage_created = _build_triage_followup(
+            task=task,
+            ctx=ctx,
+            plan=effects_plan.triage_followup,
+        )
     if triage_task is not None and triage_task.owner and triage_created:
         try:
             triage_release = ctx.runtime.release_to_owner(
@@ -1374,10 +1559,48 @@ def execute_task_update_effects(
         except Exception as exc:
             triage_release = {"taskId": triage_task.id, "owner": triage_task.owner, "releaseError": str(exc)}
 
-    _apply_triage_followup_resolution(ctx=ctx, triage=task, caller=caller)
+    if triage_required and triage_existing_id is None:
+        if effects_plan.triage_followup is None:
+            _record_triage_materialization_failure(
+                ctx=ctx,
+                task=task,
+                caller=caller,
+                reason=f"triage_followup_plan_missing:{triage_required_kind}",
+            )
+            raise RuntimeError("triage materialization failed: triage_followup_plan_missing")
+        if triage_task is None:
+            _record_triage_materialization_failure(
+                ctx=ctx,
+                task=task,
+                caller=caller,
+                reason=f"triage_task_missing:{triage_required_kind}",
+            )
+            raise RuntimeError("triage materialization failed: triage_task_missing")
+
+    release_failed = isinstance(triage_release, dict) and triage_release.get("releaseError")
+
+    if triage_task is not None:
+        metadata = dict(task.metadata or {})
+        metadata["triage_materialization_state"] = "created"
+        metadata["triage_materialization_task_id"] = triage_task.id
+        if release_failed:
+            metadata["triage_materialization_state"] = "release_failed"
+            metadata["triage_materialization_error"] = str(triage_release.get("releaseError"))
+        ctx.store.update(task.id, metadata=metadata, caller=caller)
+
+    if triage_required and triage_existing_id is None and release_failed:
+        raise RuntimeError("triage materialization failed: triage_release_failed")
+
+    if effects_plan.triage_resolution is not None:
+        _apply_triage_followup_resolution(
+            ctx=ctx,
+            triage=task,
+            caller=caller,
+            plan=effects_plan.triage_resolution,
+        )
 
     failure_notice = None
-    if task.status == TaskStatus.failed:
+    if effects_plan.send_failure_notice:
         failure_notice = ctx.failure_notifier(ctx.team, task, caller)
 
     return TaskUpdateEffects(
@@ -1385,7 +1608,7 @@ def execute_task_update_effects(
         auto_releases=auto_releases,
         failure_notice=failure_notice,
         triage_release=triage_release,
-        deferred_materialization=deferred_materialization,
+        deferred_materialization=effects_plan.deferred_materialization,
     )
 
 
@@ -1821,15 +2044,27 @@ def execute_task_update(
             failed_targets_to_wake=plan.failed_targets_to_wake,
         )
 
-    effects = execute_task_update_effects(
+    effects_plan = _build_task_update_effects_plan(
         ctx=ctx,
         task=task,
-        caller=caller,
         wake_owner=request.wake_owner,
-        message=request.message,
         dependent_ids_to_wake=plan.dependent_ids_to_wake,
         failed_targets_to_wake=plan.failed_targets_to_wake,
         deferred_materialization=deferred_materialization_effect,
     )
 
-    return TaskUpdateResult(task=task, plan=plan, effects=effects, apply_result=apply_result)
+    effects = execute_task_update_effects(
+        ctx=ctx,
+        task=task,
+        caller=caller,
+        message=request.message,
+        effects_plan=effects_plan,
+    )
+
+    return TaskUpdateResult(
+        task=task,
+        plan=plan,
+        effects=effects,
+        apply_result=apply_result,
+        effects_plan=effects_plan,
+    )
