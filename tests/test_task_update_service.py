@@ -1209,6 +1209,143 @@ next_action: handoff to qa
     assert result.outcome.task.description.startswith("DEV_RESULT")
 
 
+def test_execute_task_update_accepts_delivery_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "review1", "review1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    review = store.create(
+        "Review code quality, maintainability, and release readiness",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "review_result": {
+                "decision": "approve",
+                "summary": "review complete",
+            },
+            "review_decision": "approve",
+        },
+    )
+    store.update(review.id, status=TaskStatus.completed, caller="review1")
+    review = store.get(review.id)
+    assert review is not None
+    review.metadata["review_result"] = {
+        "decision": "approve",
+        "summary": "review complete",
+    }
+    review.metadata["review_decision"] = "approve"
+    store._save_unlocked(review)
+
+    deliver = store.create(
+        "Prepare final delivery package and human decision summary",
+        owner="leader",
+        metadata={
+            "template_stage": "deliver",
+            "message_type": "DELIVERY_RESULT",
+            "required_sections": ["status", "summary", "artifacts", "validation_evidence", "review_evidence", "remaining_risks", "human_action", "next_action"],
+        },
+    )
+    review.blocks.append(deliver.id)
+    store._save_unlocked(review)
+    claimed = store.update(deliver.id, status=TaskStatus.in_progress, caller="leader")
+
+    good = """DELIVERY_RESULT
+status: ready
+summary: final delivery package is ready for human decision
+artifacts:
+- PR #141
+- clawteam/worker_runtime.py
+validation_evidence:
+- /opt/homebrew/opt/python@3.14/bin/python3.14 -m pytest -q tests/test_worker_runtime.py -> 59 passed
+review_evidence:
+- review1 approved the final scoped change after QA
+remaining_risks:
+- none
+human_action: review and decide whether to merge
+next_action: hand off to human approver
+"""
+
+    result = execute_task_update(
+        task_id=deliver.id,
+        caller="leader",
+        ctx=TaskUpdateContext(store=store, team="demo", runtime=RuntimeOrchestrator(team="demo"), release_notifier=lambda *a, **k: None, failure_notifier=lambda *a, **k: None),
+        request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=good, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
+    )
+
+    assert result.outcome.task.status == TaskStatus.completed
+    assert result.outcome.task.description.startswith("DELIVERY_RESULT")
+
+
+def test_execute_task_update_rejects_delivery_completion_without_review_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / "data"))
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "review1", "review1-id", agent_type="general-purpose")
+
+    store = TaskStore("demo")
+    review = store.create(
+        "Review code quality, maintainability, and release readiness",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "review_result": {
+                "decision": "approve",
+                "summary": "review complete",
+            },
+            "review_decision": "approve",
+        },
+    )
+    store.update(review.id, status=TaskStatus.completed, caller="review1")
+    review = store.get(review.id)
+    assert review is not None
+    review.metadata["review_result"] = {
+        "decision": "approve",
+        "summary": "review complete",
+    }
+    review.metadata["review_decision"] = "approve"
+    store._save_unlocked(review)
+
+    deliver = store.create(
+        "Prepare final delivery package and human decision summary",
+        owner="leader",
+        metadata={
+            "template_stage": "deliver",
+            "message_type": "DELIVERY_RESULT",
+            "required_sections": ["status", "summary", "artifacts", "validation_evidence", "review_evidence", "remaining_risks", "human_action", "next_action"],
+        },
+    )
+    review.blocks.append(deliver.id)
+    store._save_unlocked(review)
+    claimed = store.update(deliver.id, status=TaskStatus.in_progress, caller="leader")
+
+    bad = """DELIVERY_RESULT
+status: ready
+summary: final delivery package is ready for human decision
+artifacts:
+- PR #141
+validation_evidence:
+- pytest -q -> 59 passed
+review_evidence:
+- none
+remaining_risks:
+- none
+human_action: review and decide whether to merge
+next_action: hand off to human approver
+"""
+
+    with pytest.raises(TaskUpdateValidationError, match="review_evidence"):
+        execute_task_update(
+            task_id=deliver.id,
+            caller="leader",
+            ctx=TaskUpdateContext(store=store, team="demo", runtime=RuntimeOrchestrator(team="demo"), release_notifier=lambda *a, **k: None, failure_notifier=lambda *a, **k: None),
+            request=TaskUpdateRequest(status=TaskStatus.completed, owner=None, subject=None, description=bad, add_blocks=None, add_blocked_by=None, add_on_fail=None, failure_kind=None, failure_note=None, failure_root_cause=None, failure_evidence=None, failure_recommended_next_owner=None, failure_recommended_action=None, execution_id=claimed.active_execution_id, wake_owner=False, message="", force=False),
+        )
+
+
 def test_resolve_remote_probe_target_prefers_current_branch_mapping(tmp_path):
     repo, _ = _init_repo_with_baseline(tmp_path)
     _git_run(repo, "remote", "add", "origin", "https://example.com/origin.git")
@@ -3682,7 +3819,7 @@ def _five_step_workflow_definition() -> dict[str, object]:
             {"subject": "Run scoped QA pass A on the real change", "owner": "qa1", "stage": "qa", "blocked_by": ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"], "on_fail": ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"], "message_type": "QA_RESULT", "required_sections": ["status"], "description": "qa A brief"},
             {"subject": "Run scoped QA pass B on the real change", "owner": "qa2", "stage": "qa", "blocked_by": ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"], "on_fail": ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"], "message_type": "QA_RESULT", "required_sections": ["status"], "description": "qa B brief"},
             {"subject": "Review code quality, maintainability, and release readiness", "owner": "review1", "stage": "review", "blocked_by": ["Run scoped QA pass A on the real change", "Run scoped QA pass B on the real change"], "on_fail": ["Implement assigned change slice A with real validation", "Implement assigned change slice B with real validation"], "message_type": "REVIEW_RESULT", "required_sections": ["decision"], "description": "review brief"},
-            {"subject": "Prepare final delivery package and human decision summary", "owner": "leader", "stage": "deliver", "blocked_by": ["Review code quality, maintainability, and release readiness"], "on_fail": [], "message_type": "", "required_sections": [], "description": "deliver brief"},
+            {"subject": "Prepare final delivery package and human decision summary", "owner": "leader", "stage": "deliver", "blocked_by": ["Review code quality, maintainability, and release readiness"], "on_fail": [], "message_type": "DELIVERY_RESULT", "required_sections": ["status", "summary", "artifacts", "validation_evidence", "review_evidence", "remaining_risks", "human_action", "next_action"], "description": "deliver brief"},
         ],
     }
 

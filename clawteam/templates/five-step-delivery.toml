@@ -561,6 +561,8 @@ next_action: <move to deliver | return to implement>
 subject = "Prepare final delivery package and human decision summary"
 owner = "leader"
 stage = "deliver"
+message_type = "DELIVERY_RESULT"
+required_sections = ["status", "summary", "artifacts", "validation_evidence", "review_evidence", "remaining_risks", "human_action", "next_action"]
 blocked_by = ["Review code quality, maintainability, and release readiness"]
 description = """Goal:
 整理最终交付结果，让人可以直接决定是否接受、继续修改或发起 PR/合并流程。
@@ -574,17 +576,26 @@ Done when:
 3. 给出真实完成度判断
 4. 给出残余风险
 5. 给出下一步人工动作建议
+6. 只用结构化 DELIVERY_RESULT 交付，不用自由 prose 混过关
 
 Do not:
 - 不要把 QA 或 Review 未通过包装成交付完成
 - 不要把已提交 PR 说成已可合并
 - 不要隐藏剩余风险
+- 不要只写散文总结就标记 completed
 
-Report:
-- What was delivered
-- Evidence of validation
-- Evidence of review
-- Current status: ready / not ready
-- Remaining risks
-- Required human action
+Report as exact block:
+DELIVERY_RESULT
+status: <ready|not_ready>
+summary: <short final delivery summary>
+artifacts:
+- <delivered output/path/link>
+validation_evidence:
+- <real validation command/scenario + actual result>
+review_evidence:
+- <review approval/evidence>
+remaining_risks:
+- <risk or none>
+human_action: <exact human decision/action>
+next_action: <exact next system/operator step>
 """

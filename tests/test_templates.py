@@ -1177,6 +1177,17 @@ class TestLoadBuiltinTemplate:
         assert review_task.on_fail == [impl_a.subject, impl_b.subject]
 
         assert deliver_task.stage == "deliver"
+        assert deliver_task.message_type == "DELIVERY_RESULT"
+        assert deliver_task.required_sections == [
+            "status",
+            "summary",
+            "artifacts",
+            "validation_evidence",
+            "review_evidence",
+            "remaining_risks",
+            "human_action",
+            "next_action",
+        ]
         assert deliver_task.blocked_by == [review_task.subject]
 
     def test_five_step_delivery_launch_creates_only_scope_task_in_post_scope_mode(self):

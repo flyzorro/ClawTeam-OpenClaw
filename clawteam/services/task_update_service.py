@@ -483,6 +483,49 @@ def _validate_review_completion(existing: TaskItem, request: TaskUpdateRequest, 
             raise TaskTransitionValidationError("REVIEW_RESULT completion requires completed QA dependencies with persisted QA_RESULT metadata")
 
 
+def _validate_delivery_completion(existing: TaskItem, request: TaskUpdateRequest, *, all_tasks: list[TaskItem]) -> None:
+    if request.status != TaskStatus.completed:
+        return
+    metadata = existing.metadata or {}
+    if metadata.get("message_type") != "DELIVERY_RESULT":
+        return
+
+    _, sections, _ = _parse_required_structured_result(
+        existing=existing,
+        request=request,
+        message_type="DELIVERY_RESULT",
+    )
+    status = str(sections.get("status") or "").strip().lower()
+    if status not in {"ready", "not_ready"}:
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires status ready or not_ready")
+    if not str(sections.get("summary") or "").strip():
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires non-empty summary")
+    if not _has_meaningful_bullets(sections.get("artifacts", "")):
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires non-placeholder artifacts bullets")
+    if not _has_meaningful_bullets(sections.get("validation_evidence", "")):
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires non-placeholder validation_evidence bullets")
+    if not _has_meaningful_bullets(sections.get("review_evidence", "")):
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires non-placeholder review_evidence bullets")
+    if not str(sections.get("human_action") or "").strip():
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires non-empty human_action")
+
+    task_by_id = {task.id: task for task in all_tasks}
+    review_dependencies = [task_by_id[task_id] for task_id in existing.blocked_by if task_id in task_by_id]
+    if not review_dependencies:
+        review_dependencies = [
+            task for task in all_tasks
+            if existing.id in getattr(task, "blocks", []) and str((task.metadata or {}).get("template_stage") or "").strip().lower() == "review"
+        ]
+    if not review_dependencies:
+        raise TaskTransitionValidationError("DELIVERY_RESULT completion requires completed review dependencies with persisted REVIEW_RESULT metadata")
+    for dependency in review_dependencies:
+        dep_metadata = dependency.metadata if isinstance(dependency.metadata, dict) else {}
+        review_result = dep_metadata.get("review_result") if isinstance(dep_metadata.get("review_result"), dict) else {}
+        review_decision = str(review_result.get("decision") or dep_metadata.get("review_decision") or "").strip().lower()
+        if dependency.status != TaskStatus.completed or review_decision != "approve":
+            raise TaskTransitionValidationError("DELIVERY_RESULT completion requires completed review dependencies with persisted REVIEW_RESULT metadata")
+
+
 def _parse_triage_result(existing: TaskItem, request: TaskUpdateRequest) -> TriageResult | None:
     metadata = existing.metadata or {}
     if metadata.get("message_type") != "TRIAGE_RESULT":
@@ -548,6 +591,9 @@ def validate_completion(existing: TaskItem, request: TaskUpdateRequest, *, all_t
         return
     if message_type == "REVIEW_RESULT":
         _validate_review_completion(existing, request, all_tasks=all_tasks)
+        return
+    if message_type == "DELIVERY_RESULT":
+        _validate_delivery_completion(existing, request, all_tasks=all_tasks)
         return
 
 
