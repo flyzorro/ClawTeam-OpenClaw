@@ -294,6 +294,9 @@ def build_worker_task_prompt(
         "- QA_RESULT must include exactly these headings: status, summary, evidence, validation, risk, next_action.",
         "- QA_RESULT status may be pass, pass_with_risk, fail, or blocked. Use pass_with_risk when the main goal is validated but residual risk or unobserved branch coverage remains.",
         "- REVIEW_RESULT must include exactly these headings: decision, summary, architecture_review, required_fixes, evidence, validation, next_action.",
+        "- TRIAGE_RESULT must include exactly these headings: summary, resolution_owner, resolution_action, resolution_note, next_action.",
+        "- For triage follow-up tasks (`triage_followup=true`), completion is fail-closed: mark the task completed only with a structured TRIAGE_RESULT block; free-form prose is not sufficient.",
+        "- TRIAGE_RESULT resolution_owner and resolution_action are the authoritative writeback fields used to reopen/reroute the source task.",
         "- Keep required_fixes limited to must-fix items; put nice-to-have ideas outside that section or write `none`.",
     ])
     return "\n".join(lines)

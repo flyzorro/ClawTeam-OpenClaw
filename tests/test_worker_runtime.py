@@ -130,6 +130,9 @@ def test_build_worker_task_prompt_uses_shell_safe_identity_bootstrap(monkeypatch
     assert "do not guess a test path and present that as proof" in prompt
     assert "QA_RESULT must include exactly these headings" in prompt
     assert "QA_RESULT status may be pass, pass_with_risk, fail, or blocked" in prompt
+    assert "triage follow-up tasks (`triage_followup=true`)" in prompt
+    assert "TRIAGE_RESULT must include exactly these headings" in prompt
+    assert "resolution_owner, resolution_action, resolution_note, next_action" in prompt
     assert "The task brief in Description is the current scope authority." in prompt
     assert "they do not by themselves approve new endpoints, APIs, schemas, pages, tabs, workflows, or deliverables." in prompt
     assert build_terminal_task_update_command(
@@ -256,6 +259,27 @@ def test_infer_upstream_failure_evidence_matches_provider_error_text():
     assert "An error occurred while processing your request" in evidence
     assert "ced3f6d9-893e-4c49-b8e9-cc031acdf6ae" in evidence
 
+
+
+def test_build_worker_task_prompt_calls_out_triage_completion_contract(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    task = TaskStore("demo").create(
+        subject="Triage complex failure: Regression QA",
+        description="Decide reroute/recovery.",
+        owner="qa1",
+        metadata={"triage_followup": "true"},
+    )
+
+    prompt = build_worker_task_prompt(
+        team_name="demo",
+        agent_name="qa1",
+        leader_name="leader",
+        task=task,
+    )
+
+    assert "triage follow-up tasks (`triage_followup=true`)" in prompt
+    assert "TRIAGE_RESULT must include exactly these headings" in prompt
+    assert "resolution_owner, resolution_action, resolution_note, next_action" in prompt
 
 
 def test_build_worker_task_prompt_includes_active_execution_when_claimed(monkeypatch, tmp_path):

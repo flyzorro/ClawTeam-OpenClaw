@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Callable
@@ -483,8 +483,59 @@ def _validate_review_completion(existing: TaskItem, request: TaskUpdateRequest, 
             raise TaskTransitionValidationError("REVIEW_RESULT completion requires completed QA dependencies with persisted QA_RESULT metadata")
 
 
+def _parse_triage_result(existing: TaskItem, request: TaskUpdateRequest) -> TriageResult | None:
+    metadata = existing.metadata or {}
+    if metadata.get("message_type") != "TRIAGE_RESULT":
+        return None
+
+    _, sections, _ = _parse_required_structured_result(
+        existing=existing,
+        request=request,
+        message_type="TRIAGE_RESULT",
+    )
+    summary = str(sections.get("summary") or "").strip()
+    resolution_owner = str(sections.get("resolution_owner") or request.triage_resolution_owner or "").strip()
+    resolution_action = str(sections.get("resolution_action") or request.triage_resolution_action or "").strip()
+    resolution_note = str(sections.get("resolution_note") or request.triage_resolution_note or "").strip()
+    next_action = str(sections.get("next_action") or "").strip()
+
+    if not summary:
+        raise TaskTransitionValidationError("TRIAGE_RESULT completion requires non-empty summary")
+    if not resolution_owner or not resolution_action:
+        raise TaskTransitionValidationError(
+            "TRIAGE_RESULT completion requires resolution_owner and resolution_action sections"
+        )
+    return TriageResult(
+        summary=summary,
+        resolution_owner=resolution_owner,
+        resolution_action=resolution_action,
+        resolution_note=resolution_note or None,
+        next_action=next_action or None,
+    )
+
+
+def _validate_triage_followup_completion(existing: TaskItem, request: TaskUpdateRequest) -> None:
+    if request.status != TaskStatus.completed:
+        return
+    metadata = existing.metadata or {}
+    if metadata.get("triage_followup") != "true":
+        return
+
+    triage_result = _parse_triage_result(existing, request)
+    resolution_owner = str((triage_result.resolution_owner if triage_result is not None else request.triage_resolution_owner) or metadata.get("triage_resolution_owner") or "").strip()
+    resolution_action = str((triage_result.resolution_action if triage_result is not None else request.triage_resolution_action) or metadata.get("triage_resolution_action") or "").strip()
+    if not resolution_owner or not resolution_action:
+        raise TaskTransitionValidationError(
+            "triage follow-up completion requires TRIAGE_RESULT with resolution_owner and resolution_action"
+        )
+
+
 def validate_completion(existing: TaskItem, request: TaskUpdateRequest, *, all_tasks: list[TaskItem]) -> None:
     metadata = existing.metadata or {}
+    if metadata.get("triage_followup") == "true":
+        _validate_triage_followup_completion(existing, request)
+        return
+
     message_type = str(metadata.get("message_type") or "").strip().upper()
     if message_type == "SETUP_RESULT":
         _validate_setup_completion(existing, request)
@@ -619,6 +670,27 @@ class TaskUpdateRequest:
     wake_owner: bool = False
     message: str = ""
     force: bool = False
+
+
+@dataclass(frozen=True)
+class TriageResult:
+    summary: str
+    resolution_owner: str
+    resolution_action: str
+    resolution_note: str | None = None
+    next_action: str | None = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "summary": self.summary,
+            "resolution_owner": self.resolution_owner,
+            "resolution_action": self.resolution_action,
+        }
+        if self.resolution_note is not None:
+            payload["resolution_note"] = self.resolution_note
+        if self.next_action is not None:
+            payload["next_action"] = self.next_action
+        return payload
 
 
 @dataclass(frozen=True)
@@ -868,6 +940,8 @@ def _plan_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> TaskTriageF
             f"Note: {note}" if note else "",
             repair_packet or "",
             "Goal: decide the correct reroute/recovery path and then reopen or release the right owner.",
+            "When done, write a structured TRIAGE_RESULT block with sections: summary, resolution_owner, resolution_action, resolution_note, next_action.",
+            "Completion contract: completion is rejected fail-closed unless TRIAGE_RESULT includes resolution_owner and resolution_action.",
         ]
         if line
     )
@@ -880,6 +954,8 @@ def _plan_triage_followup(task: TaskItem, ctx: TaskUpdateContext) -> TaskTriageF
         description=description,
         metadata={
             "triage_followup": "true",
+            "message_type": "TRIAGE_RESULT",
+            "required_sections": ["summary", "resolution_owner", "resolution_action", "resolution_note", "next_action"],
             "triage_source_task_id": task.id,
             "triage_source_status": task.status.value,
             "triage_recommended_action": next_action,
@@ -1770,6 +1846,17 @@ def execute_task_update(
     if not existing:
         raise KeyError(task_id)
 
+    triage_result = None
+    if request.status == TaskStatus.completed:
+        triage_result = _parse_triage_result(existing, request)
+    if triage_result is not None:
+        request = replace(
+            request,
+            triage_resolution_owner=triage_result.resolution_owner,
+            triage_resolution_action=triage_result.resolution_action,
+            triage_resolution_note=triage_result.resolution_note,
+        )
+
     transition_request = TaskTransitionRequest(
         status=request.status,
         add_on_fail=request.add_on_fail,
@@ -1797,6 +1884,8 @@ def execute_task_update(
         metadata_to_apply["triage_resolution_action"] = request.triage_resolution_action
     if request.triage_resolution_note is not None:
         metadata_to_apply["triage_resolution_note"] = request.triage_resolution_note
+    if triage_result is not None:
+        metadata_to_apply["triage_result"] = triage_result.to_metadata()
     if request.failure_repair_packet is not None:
         if request.status != TaskStatus.failed:
             raise TaskUpdateValidationError("failure repair-packet options require --status failed")
