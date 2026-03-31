@@ -1485,6 +1485,167 @@ def test_run_worker_iteration_recovers_review_result_and_persists_description(mo
     assert updated.metadata["review_summary"] == "reviewed the change"
 
 
+def test_run_worker_iteration_recovers_delivery_result_block(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "leader")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "leader001")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    TeamManager.add_member("demo", "review1", "review1-id")
+
+    mailbox = MailboxManager("demo")
+    store = TaskStore("demo")
+    review = store.create(
+        subject="Review code quality, maintainability, and release readiness",
+        description="Review complete",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "review_result": {"decision": "approve", "summary": "looks good"},
+            "review_decision": "approve",
+        },
+    )
+    review.status = TaskStatus.completed
+    store._save_unlocked(review)
+
+    deliver = store.create(
+        subject="Prepare final delivery package and human decision summary",
+        description="Delivery pending",
+        owner="leader",
+        metadata={
+            "template_stage": "deliver",
+            "message_type": "DELIVERY_RESULT",
+            "required_sections": ["status", "summary", "artifacts", "validation_evidence", "review_evidence", "remaining_risks", "human_action", "next_action"],
+        },
+    )
+    review.blocks.append(deliver.id)
+    store._save_unlocked(review)
+    store._save_unlocked(deliver)
+    mailbox.send("leader", "leader", "start now", key=f"task-wake:{deliver.id}", last_task=deliver.id)
+
+    transcript_dir = tmp_path / ".openclaw" / "agents" / "main" / "sessions"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    (transcript_dir / "clawteam-demo-leader.jsonl").write_text(
+        '{"type":"message","message":{"role":"assistant","content":"DELIVERY_RESULT\nstatus: ready\nsummary: delivery package prepared for human approval\nartifacts:\n- PR #142\n- clawteam/services/task_update_service.py\nvalidation_evidence:\n- /opt/homebrew/opt/python@3.14/bin/python3.14 -m pytest -q tests/test_task_update_service.py -> passed\nreview_evidence:\n- review1 approved the scoped change\nremaining_risks:\n- none\nhuman_action: review and decide whether to merge\nnext_action: wait for human decision"}}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(worker_runtime, "_run_agent_with_progress_watchdog", lambda *args, **kwargs: _Completed(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(
+        worker_runtime,
+        "_wait_for_post_exit_settle",
+        lambda **kwargs: (TaskStore("demo").get(deliver.id), False),
+    )
+
+    result = run_worker_iteration(team_name="demo", agent_name="leader", base_command=["openclaw"])
+
+    assert result["status"] == "recovered_terminal"
+    assert result["taskId"] == deliver.id
+    assert result["recoveredFrom"] == "DELIVERY_RESULT"
+    assert result["recoveredStatus"] == "completed"
+
+    updated = TaskStore("demo").get(deliver.id)
+    assert updated is not None
+    assert updated.status.value == "completed"
+    assert updated.description.startswith("DELIVERY_RESULT\n")
+    assert updated.metadata["delivery_result_status"] == "ready"
+    assert updated.metadata["delivery_result_summary"] == "delivery package prepared for human approval"
+    assert updated.metadata["delivery_result_human_action"] == "review and decide whether to merge"
+
+
+
+def test_run_worker_iteration_recovers_delivery_result_from_completion_signal(monkeypatch, tmp_path):
+    _seed_team(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "leader")
+    monkeypatch.setenv("CLAWTEAM_TEAM_NAME", "demo")
+    monkeypatch.setenv("CLAWTEAM_AGENT_ID", "leader001")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    TeamManager.add_member("demo", "review1", "review1-id")
+
+    mailbox = MailboxManager("demo")
+    store = TaskStore("demo")
+    review = store.create(
+        subject="Review code quality, maintainability, and release readiness",
+        description="Review complete",
+        owner="review1",
+        metadata={
+            "template_stage": "review",
+            "message_type": "REVIEW_RESULT",
+            "review_result": {"decision": "approve", "summary": "looks good"},
+            "review_decision": "approve",
+        },
+    )
+    review.status = TaskStatus.completed
+    store._save_unlocked(review)
+
+    deliver = store.create(
+        subject="Prepare final delivery package and human decision summary",
+        description="Delivery pending",
+        owner="leader",
+        metadata={
+            "template_stage": "deliver",
+            "message_type": "DELIVERY_RESULT",
+            "required_sections": ["status", "summary", "artifacts", "validation_evidence", "review_evidence", "remaining_risks", "human_action", "next_action"],
+        },
+    )
+    review.blocks.append(deliver.id)
+    store._save_unlocked(review)
+    store._save_unlocked(deliver)
+    mailbox.send("leader", "leader", "start now", key=f"task-wake:{deliver.id}", last_task=deliver.id)
+
+    def fake_run(*args, **kwargs):
+        session_dir = Path(kwargs["env"]["HOME"]) / ".openclaw" / "agents" / "main" / "sessions"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        task = TaskStore("demo").get(deliver.id)
+        assert task is not None
+        execution_id = task.active_execution_id
+        payload = {
+            "version": 1,
+            "task_id": deliver.id,
+            "execution_id": execution_id,
+            "terminal_status": "completed",
+            "result_type": "DELIVERY_RESULT",
+            "result_payload": {
+                "status": "ready",
+                "summary": "delivery package prepared for human approval",
+                "artifacts": "- PR #142\n- clawteam/services/task_update_service.py",
+                "validation_evidence": "- /opt/homebrew/opt/python@3.14/bin/python3.14 -m pytest -q tests/test_task_update_service.py -> passed",
+                "review_evidence": "- review1 approved the scoped change",
+                "remaining_risks": "- none",
+                "human_action": "review and decide whether to merge",
+                "next_action": "wait for human decision",
+            },
+        }
+        (session_dir / "clawteam-demo-leader.completion.json").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return _Completed(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(worker_runtime, "_run_agent_with_progress_watchdog", fake_run)
+    monkeypatch.setattr(
+        worker_runtime,
+        "_wait_for_post_exit_settle",
+        lambda **kwargs: (TaskStore("demo").get(deliver.id), False),
+    )
+
+    result = run_worker_iteration(team_name="demo", agent_name="leader", base_command=["openclaw"])
+
+    assert result["status"] == "recovered_terminal"
+    assert result["taskId"] == deliver.id
+    assert result["recoveredFrom"] == "DELIVERY_RESULT"
+    assert result["recoverySource"] == "runtime_completion_envelope"
+
+    updated = TaskStore("demo").get(deliver.id)
+    assert updated is not None
+    assert updated.status.value == "completed"
+    assert updated.description.startswith("DELIVERY_RESULT\n")
+    assert updated.metadata["delivery_result"]["status"] == "ready"
+    assert updated.metadata["delivery_result_summary"] == "delivery package prepared for human approval"
+    assert updated.metadata["delivery_result_human_action"] == "review and decide whether to merge"
+
+
+
 def test_run_worker_iteration_recovers_qa_blocked_result_block_as_blocked(monkeypatch, tmp_path):
     _seed_team(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "qa1")
