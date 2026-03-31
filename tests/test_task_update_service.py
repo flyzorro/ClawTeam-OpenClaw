@@ -1765,10 +1765,14 @@ def test_execute_task_update_rejects_triage_completion_without_resolution_fields
     triage = store.create(
         "Triage complex failure: Regression QA",
         owner="leader",
-        metadata={"triage_followup": "true"},
+        metadata={
+            "triage_followup": "true",
+            "message_type": "TRIAGE_RESULT",
+            "required_sections": ["summary", "resolution_owner", "resolution_action", "resolution_note", "next_action"],
+        },
     )
 
-    with pytest.raises(TaskUpdateValidationError, match="triage follow-up completion requires --triage-resolution-owner and --triage-resolution-action"):
+    with pytest.raises(TaskUpdateValidationError, match="triage_result completion missing required TRIAGE_RESULT sections: resolution_owner, resolution_action"):
         execute_task_update(
             task_id=triage.id,
             caller="leader",
@@ -1783,7 +1787,7 @@ def test_execute_task_update_rejects_triage_completion_without_resolution_fields
                 status=TaskStatus.completed,
                 owner=None,
                 subject=None,
-                description=None,
+                description="TRIAGE_RESULT\nsummary: routing still unclear\nresolution_note: need explicit owner\nnext_action: decide owner",
                 add_blocks=None,
                 add_blocked_by=None,
                 add_on_fail=None,
@@ -1872,7 +1876,7 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
             status=TaskStatus.completed,
             owner=None,
             subject=None,
-            description=None,
+            description="TRIAGE_RESULT\nsummary: owner confirmed after triage\nresolution_owner: dev1\nresolution_action: fix and re-run qa\nresolution_note: owner confirmed in triage\nnext_action: reopen dev and re-run qa after fix",
             add_blocks=None,
             add_blocked_by=None,
             add_on_fail=None,
@@ -1882,9 +1886,9 @@ def test_execute_task_update_applies_triage_followup_resolution(monkeypatch, tmp
             failure_evidence=None,
             failure_recommended_next_owner=None,
             failure_recommended_action=None,
-            triage_resolution_owner="dev1",
-            triage_resolution_action="fix and re-run qa",
-            triage_resolution_note="owner confirmed in triage",
+            triage_resolution_owner=None,
+            triage_resolution_action=None,
+            triage_resolution_note=None,
             execution_id=None,
             wake_owner=False,
             message="",

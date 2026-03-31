@@ -83,7 +83,8 @@ def test_build_agent_prompt_bootstrap_uses_shell_and_quotes_data_dir(monkeypatch
     assert "detached_head must equal remote_head" in prompt
     assert "REVIEW_RESULT must include exactly these headings" in prompt
     assert "triage follow-up tasks (`triage_followup=true`)" in prompt
-    assert "--triage-resolution-owner <owner>" in prompt
+    assert "TRIAGE_RESULT must include exactly these headings" in prompt
+    assert "resolution_owner, resolution_action, resolution_note, next_action" in prompt
     assert "architecture_review" in prompt
 
 
