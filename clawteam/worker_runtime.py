@@ -17,6 +17,7 @@ from clawteam.delivery.failure_notifier import notify_task_failure
 from clawteam.services.task_update_service import (
     TaskUpdateRequest,
     TaskUpdateValidationError,
+    _infer_runtime_handoff_from_setup_sections,
     validate_completion,
 )
 from clawteam.spawn.cli_env import resolve_clawteam_executable
@@ -508,6 +509,14 @@ def _extract_text_from_transcript_line(line: str) -> str:
 
 _RESULT_BLOCK_PATTERNS: list[tuple[str, re.Pattern[str], dict[str, TaskStatus]]] = [
     (
+        "SETUP_RESULT",
+        re.compile(
+            r"SETUP_RESULT\s+status:\s*(?P<status>completed|blocked|failed)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"completed": TaskStatus.completed, "blocked": TaskStatus.blocked, "failed": TaskStatus.failed},
+    ),
+    (
         "DEV_RESULT",
         re.compile(
             r"DEV_RESULT\s+status:\s*(?P<status>completed|blocked)\b(?P<body>.*?)next_action:",
@@ -548,7 +557,7 @@ def _extract_structured_result_sections(transcript_tail: str, block_name: str) -
         return None
     body = normalized[heading_match.end():]
     section_pattern = re.compile(
-        r"(?im)^(status|summary|changed_files|evidence|validation|known_issues|risk|next_action|decision|architecture_review|required_fixes):\s*"
+        r"(?im)^(status|remote_status|remote_head|detached_worktree|detached_head|install|baseline_validation|known_limitations|summary|changed_files|evidence|validation|known_issues|risk|next_action|decision|architecture_review|required_fixes):\s*"
     )
     matches = list(section_pattern.finditer(body))
     if not matches:
@@ -1313,7 +1322,15 @@ def run_worker_iteration(
                 if structured_sections:
                     normalized_result_type = result_type.lower()
                     recovery_metadata[f"{normalized_result_type}_sections"] = structured_sections
-                    if result_type == "QA_RESULT":
+                    if result_type == "SETUP_RESULT":
+                        recovery_metadata["setup_result"] = structured_sections
+                        recovery_metadata["setup_result_status"] = structured_sections.get("status", terminal_status_value)
+                        recovery_metadata["setup_result_remote_status"] = structured_sections.get("remote_status", "")
+                        recovery_metadata["setup_result_remote_head"] = structured_sections.get("remote_head", "")
+                        recovery_metadata["setup_result_detached_worktree"] = structured_sections.get("detached_worktree", "")
+                        recovery_metadata["setup_result_detached_head"] = structured_sections.get("detached_head", "")
+                        recovery_metadata["runtime_handoff"] = _infer_runtime_handoff_from_setup_sections(structured_sections)
+                    elif result_type == "QA_RESULT":
                         recovery_metadata["qa_result"] = structured_sections
                         recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
                         recovery_metadata["qa_result_risk"] = structured_sections.get("risk", "")
