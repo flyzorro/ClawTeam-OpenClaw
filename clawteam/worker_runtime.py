@@ -517,6 +517,14 @@ _RESULT_BLOCK_PATTERNS: list[tuple[str, re.Pattern[str], dict[str, TaskStatus]]]
         {"completed": TaskStatus.completed, "blocked": TaskStatus.blocked, "failed": TaskStatus.failed},
     ),
     (
+        "DELIVERY_RESULT",
+        re.compile(
+            r"DELIVERY_RESULT\s+status:\s*(?P<status>ready|not_ready)\b(?P<body>.*?)next_action:",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        {"ready": TaskStatus.completed, "not_ready": TaskStatus.failed},
+    ),
+    (
         "DEV_RESULT",
         re.compile(
             r"DEV_RESULT\s+status:\s*(?P<status>completed|blocked)\b(?P<body>.*?)next_action:",
@@ -557,7 +565,7 @@ def _extract_structured_result_sections(transcript_tail: str, block_name: str) -
         return None
     body = normalized[heading_match.end():]
     section_pattern = re.compile(
-        r"(?im)^(status|remote_status|remote_head|detached_worktree|detached_head|install|baseline_validation|known_limitations|summary|changed_files|evidence|validation|known_issues|risk|next_action|decision|architecture_review|required_fixes):\s*"
+        r"(?im)^(status|remote_status|remote_head|detached_worktree|detached_head|install|baseline_validation|known_limitations|summary|artifacts|validation_evidence|review_evidence|remaining_risks|human_action|changed_files|evidence|validation|known_issues|risk|next_action|decision|architecture_review|required_fixes):\s*"
     )
     matches = list(section_pattern.finditer(body))
     if not matches:
@@ -582,6 +590,16 @@ _RESULT_SECTION_ORDER: dict[str, tuple[str, ...]] = {
         "install",
         "baseline_validation",
         "known_limitations",
+        "next_action",
+    ),
+    "DELIVERY_RESULT": (
+        "status",
+        "summary",
+        "artifacts",
+        "validation_evidence",
+        "review_evidence",
+        "remaining_risks",
+        "human_action",
         "next_action",
     ),
     "DEV_RESULT": (
@@ -1330,6 +1348,11 @@ def run_worker_iteration(
                         recovery_metadata["setup_result_detached_worktree"] = structured_sections.get("detached_worktree", "")
                         recovery_metadata["setup_result_detached_head"] = structured_sections.get("detached_head", "")
                         recovery_metadata["runtime_handoff"] = _infer_runtime_handoff_from_setup_sections(structured_sections)
+                    elif result_type == "DELIVERY_RESULT":
+                        recovery_metadata["delivery_result"] = structured_sections
+                        recovery_metadata["delivery_result_status"] = structured_sections.get("status", terminal_status_value)
+                        recovery_metadata["delivery_result_summary"] = structured_sections.get("summary", "")
+                        recovery_metadata["delivery_result_human_action"] = structured_sections.get("human_action", "")
                     elif result_type == "QA_RESULT":
                         recovery_metadata["qa_result"] = structured_sections
                         recovery_metadata["qa_result_status"] = structured_sections.get("status", terminal_status_value)
